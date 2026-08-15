@@ -1,25 +1,24 @@
 """
 ================================================================================
-AREA199 BASKET LAB — LIVELLO DATI
+AREA199 HUMAN PERFORMANCE LAB — LIVELLO DATI
 ================================================================================
-Connessione, letture cachate, motore punteggi, gestione utenti e licenze.
+Connessione, letture cachate, motore punteggi, utenti, licenze, logo.
 Modulo autosufficiente: nessuna dipendenza da altri moduli AREA199.
 
 Segreti richiesti (pannello Streamlit Cloud):
 
     supabase_url = "https://xxxxx.supabase.co"
-    supabase_key = "eyJ...."        # service_role key, NON la anon key
+    supabase_key = "eyJ...."        # legacy service_role key
     pin_admin    = "197519"         # chiave maestra dell'amministratore
     openai_key   = "sk-..."         # facoltativo
 
-I PIN dei coach NON stanno nei secrets: si generano dal pannello di
-amministrazione e vivono nel database sotto forma di impronta.
-
-Versione 3.0 — Agosto 2026
+Versione 4.0 — Agosto 2026
 ================================================================================
 """
 
+import base64
 import hashlib
+import io
 import math
 import secrets as pysecrets
 from datetime import date, datetime
@@ -27,6 +26,11 @@ from datetime import date, datetime
 import pandas as pd
 import streamlit as st
 from supabase import create_client, Client
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 
 # ==============================================================================
@@ -36,7 +40,11 @@ from supabase import create_client, Client
 CATEGORIA = "DR3"
 RUOLI = ["Playmaker", "Guardia", "Ala Piccola", "Ala Grande", "Centro"]
 
+# Sei assi valutati. MOB e' stato aggiunto perche' la dorsiflessione di
+# caviglia limitata e' il fattore modificabile piu' documentato nel valgo
+# dinamico di ginocchio: in uno sport fatto di atterraggi non puo' mancare.
 ASSI = {
+    "MOB": "mob_kneewall",
     "ELE": "ele_salto",
     "ACC": "acc_10m",
     "AGI": "agi_lane",
@@ -45,6 +53,32 @@ ASSI = {
 }
 
 META_TEST = {
+    "mob_kneewall": {
+        "sigla": "MOB", "label": "Mobilita' caviglia",
+        "protocollo": "Knee to Wall (dorsiflessione in carico)",
+        "unita": "cm", "decimali": 1, "prove": 2, "recupero": "—",
+        "min": 0.0, "max": 20.0, "step": 0.5,
+        "promemoria": "Si registra il lato piu' limitato. "
+                      "Differenza tra i lati oltre 1.5 cm da segnalare.",
+        "sop": [
+            "Metro a nastro fissato a terra perpendicolare alla parete, "
+            "lo zero contro il muro.",
+            "Atleta in affondo, alluce del piede avanzato sulla linea del metro, "
+            "piede perfettamente allineato alla direzione del metro.",
+            "Spingere il ginocchio in avanti fino a toccare la parete "
+            "MANTENENDO IL TALLONE A TERRA.",
+            "Se il ginocchio tocca senza che il tallone si sollevi, arretrare "
+            "il piede di un centimetro e ripetere.",
+            "Il risultato e' la distanza massima alluce-parete con contatto "
+            "del ginocchio e tallone a terra.",
+            "Due misurazioni per lato. Il ginocchio deve puntare dritto: "
+            "se cade verso l'interno la prova non e' valida.",
+        ],
+        "interpretazione": "Sotto i 9 cm la letteratura segnala aumento del valgo "
+                           "dinamico in atterraggio e maggiore carico su ginocchio "
+                           "e tendine rotuleo. E' un parametro molto allenabile: "
+                           "risponde in due o tre settimane di lavoro mirato.",
+    },
     "ele_salto": {
         "sigla": "ELE", "label": "Elevazione",
         "protocollo": "Salto verticale al muro (Sargent)",
@@ -52,6 +86,21 @@ META_TEST = {
         "min": 10.0, "max": 110.0, "step": 0.5,
         "promemoria": "Stacco a piedi pari, nessuna rincorsa. "
                       "Risultato = altezza tocco meno standing reach.",
+        "sop": [
+            "Metro a nastro fissato verticalmente su parete liscia. "
+            "Polvere o gesso sulle dita della mano dominante.",
+            "STANDING REACH: atleta a piedi piatti, fianco al muro, braccio "
+            "dominante esteso al massimo. Segnare il punto. Si rileva una volta "
+            "sola e si registra nell'anagrafica.",
+            "SALTO: contromovimento libero di gambe e braccia, stacco a piedi "
+            "pari senza passi ne' rincorsa, tocco del muro nel punto piu' alto.",
+            "Risultato = altezza del tocco meno standing reach, in centimetri.",
+            "Tre prove, si registra la migliore. Recupero 45 secondi.",
+            "Prova nulla: rincorsa, passo di stacco, doppio stacco.",
+        ],
+        "interpretazione": "Espressione di potenza degli arti inferiori. "
+                           "Migliora di 2-4 cm in tre settimane su atleti non "
+                           "allenati, quasi tutto per adattamento neurale.",
     },
     "acc_10m": {
         "sigla": "ACC", "label": "Sprint 10 metri",
@@ -60,6 +109,20 @@ META_TEST = {
         "min": 1.20, "max": 3.50, "step": 0.01,
         "promemoria": "Cronometro al primo movimento. "
                       "Sempre lo stesso cronometrista tra T0 e T1.",
+        "sop": [
+            "Misurare 10 metri esatti con il metro e marcare con due coni. "
+            "La misurazione si fa una volta sola.",
+            "Partenza da fermo in piedi, piede avanzato SULLA linea, "
+            "nessun contromovimento all'indietro.",
+            "Cronometro avviato al primo movimento visibile, fermato al "
+            "passaggio del busto sul cono dei 10 metri.",
+            "Due prove, si registra la migliore. Recupero 2 minuti pieni.",
+            "VINCOLO: deve cronometrare sempre la stessa persona al T0 e al T1.",
+        ],
+        "interpretazione": "In tre settimane si muove di 3-6 centesimi, che "
+                           "rientrano nell'errore del cronometraggio manuale. "
+                           "Serve al profilo, NON va usato come prova di efficacia "
+                           "del programma.",
     },
     "agi_lane": {
         "sigla": "AGI", "label": "Lane Agility",
@@ -68,6 +131,23 @@ META_TEST = {
         "min": 8.00, "max": 22.00, "step": 0.01,
         "promemoria": "Sprint, slide, corsa indietro, slide. Poi senso inverso "
                       "senza fermarsi. Nullo se un angolo viene tagliato.",
+        "sop": [
+            "Nessuna misurazione: il percorso sono le linee dell'area.",
+            "Partenza dall'angolo ALTO SINISTRO dell'area, lato lunetta.",
+            "1) Sprint frontale fino all'angolo basso sinistro (fondo).",
+            "2) Slide laterale difensiva fino all'angolo basso destro.",
+            "3) Corsa ALL'INDIETRO fino all'angolo alto destro.",
+            "4) Slide laterale fino al punto di partenza.",
+            "5) Senza fermarsi, ripetere il giro in senso inverso e tornare "
+            "al punto di partenza. Il tempo e' del giro completo.",
+            "Due prove, si registra la migliore. Recupero 3 minuti.",
+            "Prova nulla: angolo tagliato, piede che non raggiunge la linea, "
+            "slide eseguita con passi incrociati.",
+        ],
+        "interpretazione": "Il test piu' reattivo del gruppo: -0.4/-0.8 secondi "
+                           "in tre settimane. Zero errore di setup perche' il "
+                           "percorso e' gia' disegnato sul campo. E' il dato da "
+                           "mostrare quando serve dimostrare che il lavoro funziona.",
     },
     "asi_monopodalico": {
         "sigla": "ASI", "label": "Asimmetria monopodalica",
@@ -76,6 +156,19 @@ META_TEST = {
         "min": 0.0, "max": 60.0, "step": 0.1,
         "promemoria": "Atterraggio sulla stessa gamba, stabilizzazione 2 secondi. "
                       "Si misurano i centimetri di destra e di sinistra.",
+        "sop": [
+            "Metro a nastro steso a terra, nastro adesivo per la linea di partenza.",
+            "Salto in lungo da fermo su UNA gamba sola, braccia libere.",
+            "Atterraggio sulla stessa gamba con stabilizzazione di almeno "
+            "2 secondi: se l'atleta appoggia l'altro piede o salta, prova nulla.",
+            "Misura dalla linea al tallone dell'appoggio.",
+            "Due prove per lato, si registra la migliore per ciascun lato.",
+            "L'app calcola la percentuale di squilibrio.",
+        ],
+        "interpretazione": "Oltre il 10% di differenza tra i lati il rischio di "
+                           "infortunio agli arti inferiori aumenta in modo "
+                           "documentato. E' un indicatore di rischio, non di "
+                           "prestazione: non entra nel punteggio complessivo.",
     },
     "for_piegamenti": {
         "sigla": "FOR", "label": "Piegamenti 60 secondi",
@@ -84,6 +177,20 @@ META_TEST = {
         "min": 0, "max": 120, "step": 1,
         "promemoria": "Gomito a 90 gradi, corpo in linea. Non valida se il bacino "
                       "cede. A coppie: uno esegue, uno conta.",
+        "sop": [
+            "Atleti a coppie: uno esegue, uno conta ad alta voce.",
+            "Mani a larghezza spalle, corpo in linea retta da caviglia a testa.",
+            "Discesa fino a gomito a 90 gradi, risalita a braccia "
+            "completamente estese.",
+            "Ritmo libero: si puo' fermare in posizione alta senza scendere "
+            "a terra, il cronometro non si ferma.",
+            "Una sola prova, massimo numero di ripetizioni VALIDE in 60 secondi.",
+            "Non valida: bacino che cede o si solleva, escursione incompleta, "
+            "ginocchia a terra.",
+        ],
+        "interpretazione": "Forza-resistenza del treno superiore, rilevante nei "
+                           "contatti e nella tenuta del corpo in traffico. "
+                           "Molto reattivo: +5/+10 ripetizioni in tre settimane.",
     },
     "res_navetta": {
         "sigla": "RES", "label": "Navetta (line drill)",
@@ -92,16 +199,34 @@ META_TEST = {
         "min": 20.0, "max": 60.0, "step": 0.1,
         "promemoria": "Ogni linea va toccata con la mano. "
                       "SEMPRE l'ultimo test della sessione.",
+        "sop": [
+            "Partenza dalla linea di fondo. Percorso sulle linee del campo.",
+            "Andata e ritorno toccando CON LA MANO ogni linea, tornando ogni "
+            "volta alla linea di fondo di partenza:",
+            "lunetta tiro libero vicina, meta' campo, lunetta opposta, "
+            "fondo opposto.",
+            "Una sola prova cronometrata, a recupero completo dai test "
+            "precedenti.",
+            "E' il test piu' affaticante: va SEMPRE eseguito per ultimo, "
+            "altrimenti falsa tutti gli altri.",
+        ],
+        "interpretazione": "Capacita' di ripetere sforzi intensi, il profilo "
+                           "metabolico della pallacanestro. Migliora di 1-2 "
+                           "secondi in tre settimane.",
     },
 }
 
-# Dal meno al piu' affaticante. Invertirlo falsa i risultati.
-ORDINE_TEST = ["ele_salto", "acc_10m", "agi_lane", "asi_monopodalico",
-               "for_piegamenti", "res_navetta"]
+# Ordine di esecuzione: mobilita' prima (si valuta a freddo, dopo il
+# riscaldamento generale), navetta ultima perche' affatica.
+ORDINE_TEST = ["mob_kneewall", "ele_salto", "acc_10m", "agi_lane",
+               "asi_monopodalico", "for_piegamenti", "res_navetta"]
 
-SOGLIA_ASIMMETRIA = 10.0
+SOGLIA_ASIMMETRIA = 10.0      # percentuale, salto monopodalico
+SOGLIA_MOB_DIFF = 1.5         # centimetri, differenza knee-to-wall tra i lati
+SOGLIA_MOB_MINIMA = 9.0       # centimetri, sotto cui si segnala il rischio
 TTL_CACHE = 300
 SLOT_DEFAULT = 15
+LOGO_LATO_MAX = 320           # pixel, ridimensionamento del logo caricato
 
 
 # ==============================================================================
@@ -132,12 +257,11 @@ def invalidate_cache():
 # 3. UTENTI, PIN E LICENZE
 # ==============================================================================
 #
-# L'AMMINISTRATORE non e' nel database: il suo PIN sta nei secrets. Cosi'
+# L'AMMINISTRATORE non e' nel database: il suo PIN sta nei secrets, cosi'
 # l'accesso resta possibile anche con tabella utenti vuota o corrotta.
 #
 # I PIN dei coach non sono mai salvati in chiaro. Al momento della creazione
-# il PIN viene mostrato UNA VOLTA; poi resta solo la sua impronta. Se si
-# perde non si recupera: si rigenera.
+# il PIN viene mostrato UNA VOLTA; poi resta solo la sua impronta.
 # ==============================================================================
 
 RUOLO_ADMIN = "admin"
@@ -148,11 +272,13 @@ PERMESSI = {
         "etichetta": "Direttore Tecnico",
         "elimina": True, "vede_norme": True, "modifica_norme": True,
         "gestisce_utenti": True, "vede_tutte_squadre": True, "usa_ai": True,
+        "vede_diagnostica": True,
     },
     RUOLO_PARTNER: {
         "etichetta": "Coach",
         "elimina": False, "vede_norme": False, "modifica_norme": False,
         "gestisce_utenti": False, "vede_tutte_squadre": False, "usa_ai": True,
+        "vede_diagnostica": False,
     },
 }
 
@@ -162,7 +288,7 @@ def _impronta(pin: str, salt: str) -> str:
 
 
 def genera_pin(lunghezza: int = 6) -> str:
-    """PIN numerico casuale, generato con sorgente crittografica."""
+    """PIN numerico casuale, sorgente crittografica."""
     return "".join(str(pysecrets.randbelow(10)) for _ in range(lunghezza))
 
 
@@ -175,15 +301,11 @@ def etichetta_ruolo() -> str:
 
 
 def verifica_accesso(pin: str) -> dict | None:
-    """
-    Autentica un PIN.
-    Restituisce {ruolo, utente_id, nome, slot_max} oppure None.
-    """
+    """Autentica un PIN. Restituisce {ruolo, utente_id, nome, ...} oppure None."""
     pin = str(pin).strip()
     if not pin:
         return None
 
-    # 1) Chiave maestra dai secrets
     try:
         master = str(st.secrets.get("pin_admin", "\x00")).strip()
         if master and pin == master:
@@ -192,10 +314,8 @@ def verifica_accesso(pin: str) -> dict | None:
     except Exception:
         pass
 
-    # 2) Coach dal database
     try:
-        res = (get_client().table("utenti").select("*")
-               .eq("attivo", True).execute())
+        res = get_client().table("utenti").select("*").eq("attivo", True).execute()
         for u in (res.data or []):
             if _impronta(pin, u["pin_salt"]) == u["pin_hash"]:
                 scad = u.get("scadenza")
@@ -230,20 +350,36 @@ def load_utenti() -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["coach_id", "nome", "organizzazione",
                                      "slot_max", "slot_usati", "slot_liberi",
-                                     "attivo", "scadenza", "ultimo_accesso"])
+                                     "attivo", "scadenza", "ultimo_accesso",
+                                     "logo_b64"])
     for c in ["slot_max", "slot_usati", "slot_liberi"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").astype("Int64")
     return df
 
 
+def dati_coach(coach_id) -> dict:
+    """Nome, societa' e logo di un coach. Dizionario vuoto se non trovato."""
+    vuoto = {"nome": "", "organizzazione": "", "logo_b64": ""}
+    if coach_id is None:
+        return vuoto
+    u = load_utenti()
+    if u.empty:
+        return vuoto
+    r = u[u["coach_id"] == coach_id]
+    if r.empty:
+        return vuoto
+    r = r.iloc[0]
+    return {"nome": str(r.get("nome") or ""),
+            "organizzazione": str(r.get("organizzazione") or ""),
+            "logo_b64": str(r.get("logo_b64") or "")}
+
+
 def crea_utente(nome: str, organizzazione: str = "", slot_max: int = SLOT_DEFAULT,
                 scadenza=None, note: str = "") -> tuple[bool, str, str]:
     """
     Crea un coach e genera il suo PIN.
-    Restituisce (esito, messaggio, pin_in_chiaro).
-    Il PIN in chiaro esiste solo qui: va comunicato subito, poi non e' piu'
-    recuperabile.
+    Il PIN in chiaro esiste solo nel valore restituito: va comunicato subito.
     """
     try:
         pin = genera_pin()
@@ -254,8 +390,8 @@ def crea_utente(nome: str, organizzazione: str = "", slot_max: int = SLOT_DEFAUL
             "slot_max": int(slot_max), "attivo": True, "note": note.strip() or None,
         }
         if scadenza:
-            dati["scadenza"] = scadenza.isoformat() if hasattr(scadenza, "isoformat") \
-                else str(scadenza)
+            dati["scadenza"] = (scadenza.isoformat()
+                                if hasattr(scadenza, "isoformat") else str(scadenza))
         get_client().table("utenti").insert(dati).execute()
         load_utenti.clear()
         return True, "Utente creato.", pin
@@ -264,7 +400,7 @@ def crea_utente(nome: str, organizzazione: str = "", slot_max: int = SLOT_DEFAUL
 
 
 def rigenera_pin(utente_id: int) -> tuple[bool, str]:
-    """Nuovo PIN per un coach. Il precedente smette immediatamente di funzionare."""
+    """Nuovo PIN. Il precedente smette immediatamente di funzionare."""
     try:
         pin = genera_pin()
         salt = pysecrets.token_hex(16)
@@ -278,7 +414,8 @@ def rigenera_pin(utente_id: int) -> tuple[bool, str]:
 
 
 def aggiorna_licenza(utente_id: int, slot_max: int | None = None,
-                     attivo: bool | None = None, scadenza=None) -> bool:
+                     attivo: bool | None = None, scadenza=None,
+                     organizzazione: str | None = None) -> bool:
     try:
         campi = {}
         if slot_max is not None:
@@ -288,6 +425,8 @@ def aggiorna_licenza(utente_id: int, slot_max: int | None = None,
         if scadenza is not None:
             campi["scadenza"] = (scadenza.isoformat()
                                  if hasattr(scadenza, "isoformat") else scadenza)
+        if organizzazione is not None:
+            campi["organizzazione"] = organizzazione.strip() or None
         if not campi:
             return True
         get_client().table("utenti").update(campi).eq("id", utente_id).execute()
@@ -298,7 +437,6 @@ def aggiorna_licenza(utente_id: int, slot_max: int | None = None,
 
 
 def slot_info(coach_id) -> dict:
-    """Stato della licenza: usati, massimo, liberi."""
     vuoto = {"usati": 0, "max": None, "liberi": None, "pieno": False}
     if coach_id is None:
         return vuoto
@@ -315,16 +453,57 @@ def slot_info(coach_id) -> dict:
 
 
 # ==============================================================================
-# 4. LETTURE
+# 4. LOGO SOCIETA'
+# ==============================================================================
+
+def prepara_logo(file_caricato) -> tuple[bool, str]:
+    """
+    Converte l'immagine caricata in data URI base64, ridimensionandola.
+    Il ridimensionamento evita di trascinare file da megabyte dentro ogni
+    lettura della tabella utenti.
+    """
+    try:
+        grezzo = file_caricato.read()
+        if not grezzo:
+            return False, "File vuoto."
+
+        if Image is not None:
+            img = Image.open(io.BytesIO(grezzo))
+            if img.mode not in ("RGB", "RGBA"):
+                img = img.convert("RGBA")
+            img.thumbnail((LOGO_LATO_MAX, LOGO_LATO_MAX), Image.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+            grezzo = buf.getvalue()
+            mime = "image/png"
+        else:
+            if len(grezzo) > 400_000:
+                return False, ("Immagine troppo grande. Caricane una sotto i 400 KB "
+                               "oppure ridimensionala prima.")
+            mime = getattr(file_caricato, "type", "image/png") or "image/png"
+
+        return True, f"data:{mime};base64,{base64.b64encode(grezzo).decode()}"
+    except Exception as e:
+        return False, f"Immagine non leggibile: {e}"
+
+
+def salva_logo(utente_id: int, data_uri: str) -> bool:
+    try:
+        get_client().table("utenti").update({"logo_b64": data_uri or None}) \
+            .eq("id", utente_id).execute()
+        load_utenti.clear()
+        return True
+    except Exception:
+        return False
+
+
+# ==============================================================================
+# 5. LETTURE
 # ==============================================================================
 
 @st.cache_data(ttl=TTL_CACHE, show_spinner=False)
 def load_atleti(coach_id=None, solo_attivi: bool = True,
                 tutte_squadre: bool = False) -> pd.DataFrame:
-    """
-    Rosa di un coach. Con tutte_squadre=True restituisce tutto
-    (riservato all'amministratore).
-    """
     q = get_client().table("atleti").select("*")
     if solo_attivi:
         q = q.eq("attivo", True)
@@ -353,9 +532,10 @@ def load_test(atleta_id: str | None = None) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=[
             "id", "atleta_id", "data_test", "sessione", "eta", "peso", "altezza",
-            "ele_salto", "acc_10m", "agi_lane", "res_navetta", "for_piegamenti",
-            "asi_monopodalico", "note", "ai_comment"])
-    for c in list(ASSI.values()) + ["asi_monopodalico", "peso"]:
+            "mob_kneewall", "mob_diff", "ele_salto", "acc_10m", "agi_lane",
+            "res_navetta", "for_piegamenti", "asi_monopodalico", "note",
+            "ai_comment"])
+    for c in list(ASSI.values()) + ["asi_monopodalico", "mob_diff", "peso"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     if "data_test" in df.columns:
@@ -379,9 +559,9 @@ def load_targets() -> dict:
     res = get_client().table("role_targets").select("*").execute()
     return {
         r["ruolo"]: {
-            "ELE": int(r.get("ele_target", 70)), "ACC": int(r.get("acc_target", 70)),
-            "AGI": int(r.get("agi_target", 70)), "RES": int(r.get("res_target", 70)),
-            "FOR": int(r.get("for_target", 70)),
+            "MOB": int(r.get("mob_target", 75)), "ELE": int(r.get("ele_target", 70)),
+            "ACC": int(r.get("acc_target", 70)), "AGI": int(r.get("agi_target", 70)),
+            "RES": int(r.get("res_target", 70)), "FOR": int(r.get("for_target", 70)),
         } for r in (res.data or [])
     }
 
@@ -401,7 +581,7 @@ def load_confronto(coach_id=None, tutte_squadre: bool = False) -> pd.DataFrame:
 
 
 # ==============================================================================
-# 5. MOTORE PUNTEGGI
+# 6. MOTORE PUNTEGGI
 # ==============================================================================
 #
 # Il confronto e' contro NORME FISSE per ruolo, non contro la coorte interna.
@@ -483,8 +663,42 @@ def calcola_asimmetria(destra, sinistra) -> float | None:
     return round((alto - basso) / alto * 100, 1)
 
 
+def calcola_mobilita(destra, sinistra) -> tuple[float | None, float | None]:
+    """
+    Dal knee-to-wall dei due lati restituisce (lato piu' limitato, differenza).
+
+    Si registra il PEGGIORE perche' e' quello che determina il rischio:
+    una caviglia mobile non compensa quella rigida durante l'atterraggio.
+    """
+    try:
+        d, s = float(destra), float(sinistra)
+    except (TypeError, ValueError):
+        return None, None
+    if pd.isna(d) or pd.isna(s) or d < 0 or s < 0:
+        return None, None
+    return round(min(d, s), 1), round(abs(d - s), 1)
+
+
+def flag_mobilita(valore) -> bool:
+    """True se la dorsiflessione e' sotto la soglia di rischio."""
+    try:
+        v = float(valore)
+        return not pd.isna(v) and 0 < v < SOGLIA_MOB_MINIMA
+    except (TypeError, ValueError):
+        return False
+
+
+def flag_mob_diff(valore) -> bool:
+    """True se la differenza tra i due lati e' clinicamente significativa."""
+    try:
+        v = float(valore)
+        return not pd.isna(v) and v > SOGLIA_MOB_DIFF
+    except (TypeError, ValueError):
+        return False
+
+
 # ==============================================================================
-# 6. SCRITTURE
+# 7. SCRITTURE
 # ==============================================================================
 
 def genera_id(nome: str, cognome: str, anno) -> str:
@@ -494,10 +708,7 @@ def genera_id(nome: str, cognome: str, anno) -> str:
 def salva_atleta(dati: dict, coach_id=None) -> tuple[bool, str]:
     """
     Inserisce o aggiorna un atleta rispettando il limite di licenza.
-
-    Il controllo e' doppio: qui e nel trigger del database. Se il limite viene
-    superato per qualunque via, l'inserimento viene rifiutato a livello di
-    database e l'eccezione risale fin qui.
+    Il controllo e' doppio: qui e nel trigger del database.
     """
     try:
         nuovo = not dati.get("id")
@@ -539,10 +750,10 @@ def salva_misure(atleta_id: str, data_test, sessione: str,
 
     PERCHE' NON E' UN UPSERT
     ------------------------
-    I test si inseriscono una griglia alla volta: prima l'elevazione di tutti,
-    poi lo sprint di tutti. Un upsert completo riscriverebbe l'intera riga e
-    azzererebbe i test salvati prima. Qui si cerca la riga della sessione e si
-    aggiornano SOLO le colonne effettivamente passate.
+    I test si inseriscono una griglia alla volta: prima la mobilita' di tutti,
+    poi l'elevazione di tutti. Un upsert completo riscriverebbe l'intera riga
+    e azzererebbe i test salvati prima. Qui si cerca la riga della sessione e
+    si aggiornano SOLO le colonne effettivamente passate.
     """
     try:
         d = (data_test.isoformat()[:10]
@@ -615,7 +826,7 @@ def aggiorna_norma(ruolo: str, test: str, media: float, dev_st: float,
 
 
 # ==============================================================================
-# 7. PRESENTAZIONE
+# 8. PRESENTAZIONE
 # ==============================================================================
 
 def formatta_valore(col: str, valore) -> str:
