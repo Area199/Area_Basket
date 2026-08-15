@@ -198,8 +198,9 @@ def render_scheda(atleta, punteggi, overall, grezzi, targets,
     alert = ""
     if asimmetria is not None and db.flag_asimmetria(asimmetria):
         alert += (f'<div class="a199-alert"><b>ASIMMETRIA {float(asimmetria):.1f}%</b>'
-                  ' — oltre la soglia del 10%. Previsto lavoro correttivo '
-                  'unilaterale.</div>')
+                  ' — oltre il 10%, soglia mutuata dai criteri di ritorno allo '
+                  'sport. Da approfondire, non è una diagnosi: previsto lavoro '
+                  'unilaterale di riequilibrio.</div>')
     mob = grezzi.get("mob_kneewall")
     if db.flag_mobilita(mob):
         alert += (f'<div class="a199-alert"><b>CAVIGLIA RIGIDA '
@@ -208,8 +209,9 @@ def render_scheda(atleta, punteggi, overall, grezzi, targets,
                   'mobilizzazione quotidiana.</div>')
     if mob_diff is not None and db.flag_mob_diff(mob_diff):
         alert += (f'<div class="a199-alert"><b>ASIMMETRIA CAVIGLIE '
-                  f'{float(mob_diff):.1f} cm</b> — oltre 1.5 cm di differenza '
-                  'tra i lati. Lavoro mirato sul lato piu\' limitato.</div>')
+                  f'{float(mob_diff):.1f} cm</b> — oltre 2 cm di differenza tra '
+                  'i lati, fuori dal range di normalità. Lavoro mirato sul lato '
+                  'più limitato.</div>')
 
     st.markdown(f'<div class="a199-card"><div class="a199-head"><div>'
                 f'<div class="a199-nome">{nome}</div>'
