@@ -54,12 +54,27 @@ ETICHETTA_SETTIMANA = {
     1: "Introduzione", 2: "Carico", 3: "Picco", 4: "Scarico",
 }
 
-# Struttura della singola seduta, in minuti sul blocco disponibile
+# Struttura della singola seduta.
+#
+# ATTIVAZIONE AL 35% E NON AL 25%
+# -------------------------------
+# Il blocco di attivazione NON e' un riscaldamento: e' il programma di
+# prevenzione neuromuscolare. La meta-analisi dose-risposta di Rossler e
+# colleghi (2017) indica che l'effetto protettivo si ottiene con bocconi di
+# 10-15 minuti, due o tre volte a settimana. Sotto quella soglia si sta
+# facendo un riscaldamento, non prevenzione. Al 25% di un blocco da 25 minuti
+# si arrivava a 6 minuti: insufficiente. Al 35% si arriva a 9 minuti, e su un
+# blocco da 30 a oltre 10.
 STRUTTURA_BLOCCO = [
-    ("attivazione", 0.25, 2, ["mobilita", "attivazione", "correttivo"]),
-    ("centrale",    0.55, 3, ["forza", "pliometria", "agilita"]),
+    ("attivazione", 0.35, 3, ["mobilita", "attivazione", "correttivo"]),
+    ("centrale",    0.45, 3, ["forza", "pliometria", "agilita"]),
     ("chiusura",    0.20, 1, ["condizionamento", "core"]),
 ]
+
+# Sotto i 30 minuti il blocco di attivazione non arriva ai 10 minuti che la
+# letteratura indica come dose minima efficace per la prevenzione. Non e' un
+# divieto: i correttivi individuali quotidiani concorrono alla stessa dose.
+MINUTI_BLOCCO_MINIMI = 30
 
 # Marcatori usati nelle verifiche leggere: rapidi da rilevare su quindici
 # persone e sensibili all'adattamento neuromuscolare.
