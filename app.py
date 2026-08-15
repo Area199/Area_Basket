@@ -3,10 +3,12 @@
 AREA199 HUMAN PERFORMANCE LAB — APPLICAZIONE
 ================================================================================
 File richiesti nella stessa cartella:
-    db_basket.py      livello dati, punteggi, utenti, licenze, logo
-    foglio_campo.py   generatore del foglio stampabile
+    db_basket.py         livello dati, punteggi, utenti, licenze, logo
+    foglio_campo.py      generatore del foglio stampabile
+    motore_programmi.py  analisi lacune, gruppi, generazione programmi
+    pagine_programmi.py  schermate di programmazione e schede
 
-Versione 4.0 — Agosto 2026
+Versione 5.0 — Agosto 2026
 Dott. Antonio Petruzzi — Senior Human Performance Specialist
 ================================================================================
 """
@@ -19,6 +21,7 @@ import streamlit as st
 
 import db_basket as db
 from foglio_campo import genera_foglio
+from pagine_programmi import pagina_programmazione, pagina_schede
 
 try:
     import openai
@@ -1205,7 +1208,10 @@ def main():
             st.divider()
 
         voci = ["Panoramica squadra", "Sessione test", "Scheda atleta",
-                "Confronto T0/T1", "Rosa", "Protocolli", "Profilo società"]
+                "Confronto T0/T1", "Schede di lavoro", "Rosa", "Protocolli",
+                "Profilo società"]
+        if db.puo("gestisce_utenti"):
+            voci.insert(4, "Programmazione")
         if db.puo("vede_norme"):
             voci.append("Norme")
         if db.puo("gestisce_utenti"):
@@ -1254,6 +1260,10 @@ def main():
                     "per gestirne la rosa.")
         else:
             pagina_rosa(atleti, coach_id, info_slot, squadra_default)
+    elif pagina == "Programmazione":
+        pagina_programmazione(atleti, norme, targets, coach_id, logo)
+    elif pagina == "Schede di lavoro":
+        pagina_schede(coach_id, atleti, logo)
     elif pagina == "Protocolli":
         pagina_protocolli()
     elif pagina == "Profilo società":
