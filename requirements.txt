@@ -1,12 +1,11 @@
 # ==============================================================================
-# AREA199 BASKET LAB — DIPENDENZE
+# AREA199 HUMAN PERFORMANCE LAB — DIPENDENZE
 #
-# Tutte le versioni sono PINNATE con ==
-# Motivo: l'aggiornamento automatico di una libreria a monte puo' rompere
-# l'app in produzione senza che nulla sia stato modificato nel codice.
+# Versioni PINNATE con ==
+# L'aggiornamento automatico di una libreria a monte puo' rompere l'app in
+# produzione senza che nulla sia stato modificato nel codice.
 #
-# Per aggiornare: cambiare una riga alla volta e verificare il deploy.
-# Mai sbloccare tutto insieme.
+# Su Streamlit Cloud impostare Python 3.11 nelle impostazioni dell'app.
 # ==============================================================================
 
 streamlit==1.41.1
@@ -15,4 +14,4 @@ pandas==2.2.3
 numpy==2.2.1
 plotly==5.24.1
 openai==1.59.6
-markdown==3.7
+Pillow==11.1.0
