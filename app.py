@@ -6,7 +6,7 @@ File richiesti nella stessa cartella:
     db_basket.py      livello dati, punteggi, utenti e licenze
     foglio_campo.py   generatore del foglio stampabile
 
-Versione 3.0 — Agosto 2026
+Versione 3.1 — Agosto 2026
 Dott. Antonio Petruzzi — Senior Human Performance Specialist
 ================================================================================
 """
@@ -250,7 +250,8 @@ def pagina_admin():
     with c[2]:
         kpi(int(utenti["slot_max"].sum()) if not utenti.empty else 0, "Slot concessi")
     with c[3]:
-        kpi(int(utenti["slot_usati"].sum()) if not utenti.empty else 0, "Slot occupati", ORO)
+        kpi(int(utenti["slot_usati"].sum()) if not utenti.empty else 0,
+            "Slot occupati", ORO)
 
     # --- PIN appena generato ---
     if st.session_state.get("pin_nuovo"):
@@ -306,8 +307,9 @@ def pagina_admin():
                                         int(riga["slot_max"]), step=1)
                 if st.button("Aggiorna slot"):
                     if nuovi < int(riga["slot_usati"]):
-                        st.error(f"Non si può scendere sotto i {int(riga['slot_usati'])} "
-                                 "slot già occupati. Rimuovere prima degli atleti.")
+                        st.error(f"Non si può scendere sotto i "
+                                 f"{int(riga['slot_usati'])} slot già occupati. "
+                                 "Rimuovere prima degli atleti.")
                     elif db.aggiorna_licenza(uid, slot_max=nuovi):
                         st.success("Slot aggiornati.")
                         st.rerun()
@@ -341,7 +343,9 @@ def pagina_admin():
         with st.form("nuovo_coach", clear_on_submit=True):
             c1, c2 = st.columns(2)
             nome = c1.text_input("Nome e cognome")
-            org = c2.text_input("Società o squadra")
+            org = c2.text_input("Società o squadra",
+                                help="Comparirà come squadra predefinita quando "
+                                     "questo coach inserisce i suoi atleti.")
             c3, c4 = st.columns(2)
             slot = c3.number_input("Slot atleti", 1, 200, db.SLOT_DEFAULT, step=1,
                                    help="Numero massimo di atleti che potrà "
@@ -663,7 +667,9 @@ def pagina_atleta(atleti, norme, targets):
                     if pd.notna(atleta.get("reach")) else "—")
         c[3].metric("Apertura", f"{atleta['apertura']} cm"
                     if pd.notna(atleta.get("apertura")) else "—")
-        st.caption(f"Codice atleta: {atleta['id']} · Mano: {atleta.get('mano','—')}")
+        st.caption(f"Codice atleta: {atleta['id']} · "
+                   f"Squadra: {atleta.get('squadra') or '—'} · "
+                   f"Mano: {atleta.get('mano','—')}")
         if pd.isna(atleta.get("reach")):
             st.warning("Standing reach mancante: senza questo dato l'elevazione "
                        "non è misurabile correttamente.")
@@ -768,7 +774,13 @@ def pagina_confronto(coach_id, tutte):
 # PAGINA — ROSA
 # ==============================================================================
 
-def pagina_rosa(atleti, coach_id, info_slot):
+def pagina_rosa(atleti, coach_id, info_slot, squadra_default=""):
+    """
+    squadra_default arriva dalla licenza del coach: e' il campo
+    "Societa' o squadra" indicato al momento della registrazione.
+    Resta modificabile, cosi' un coach che segue piu' formazioni
+    (prima squadra e under, per esempio) puo' distinguerle.
+    """
     st.title("Rosa")
     barra_slot(info_slot)
 
@@ -786,7 +798,10 @@ def pagina_rosa(atleti, coach_id, info_slot):
         anno = c3.number_input("Anno nascita", 1960, date.today().year, 2000, step=1)
 
         c4, c5, c6 = st.columns(3)
-        squadra = c4.text_input("Squadra", "DR3 Maschile")
+        squadra = c4.text_input("Squadra", value=squadra_default,
+                                help="Precompilata dalla tua licenza. Modificala "
+                                     "solo se questo atleta appartiene a una "
+                                     "formazione diversa.")
         ruolo = c5.selectbox("Ruolo", db.RUOLI)
         mano = c6.selectbox("Mano", ["Dx", "Sx", "Ambidestro"])
 
@@ -805,9 +820,11 @@ def pagina_rosa(atleti, coach_id, info_slot):
             else:
                 ok, msg = db.salva_atleta({
                     "nome": nome.strip(), "cognome": cognome.strip(),
-                    "anno_nascita": int(anno), "squadra": squadra, "ruolo": ruolo,
-                    "mano": mano, "peso": peso, "altezza": int(altezza),
-                    "reach": int(reach), "apertura": int(apertura), "attivo": True},
+                    "anno_nascita": int(anno),
+                    "squadra": squadra.strip() or squadra_default or None,
+                    "ruolo": ruolo, "mano": mano, "peso": peso,
+                    "altezza": int(altezza), "reach": int(reach),
+                    "apertura": int(apertura), "attivo": True},
                     coach_id=coach_id)
                 if ok:
                     st.success(f"Atleta aggiunto — codice {msg}")
@@ -904,6 +921,23 @@ def pagina_norme(norme):
 # ROUTER
 # ==============================================================================
 
+def squadra_di(coach_id) -> str:
+    """
+    Nome squadra registrato sulla licenza del coach: serve a precompilare
+    il campo 'Squadra' nell'inserimento atleti, invece di proporre un
+    valore fisso scollegato dall'account.
+    """
+    if coach_id is None:
+        return ""
+    u = db.load_utenti()
+    if u.empty:
+        return ""
+    r = u[u["coach_id"] == coach_id]
+    if r.empty:
+        return ""
+    return str(r.iloc[0].get("organizzazione") or "")
+
+
 def main():
     if "ruolo" not in st.session_state:
         schermata_login()
@@ -981,7 +1015,7 @@ def main():
             st.info("Seleziona una squadra specifica nella barra laterale "
                     "per gestirne la rosa.")
         else:
-            pagina_rosa(atleti, coach_id, info_slot)
+            pagina_rosa(atleti, coach_id, info_slot, squadra_di(coach_id))
     elif pagina == "Norme":
         pagina_norme(norme)
     elif pagina == "Amministrazione":
