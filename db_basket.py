@@ -221,9 +221,29 @@ META_TEST = {
 ORDINE_TEST = ["mob_kneewall", "ele_salto", "acc_10m", "agi_lane",
                "asi_monopodalico", "for_piegamenti", "res_navetta"]
 
-SOGLIA_ASIMMETRIA = 10.0      # percentuale, salto monopodalico
-SOGLIA_MOB_DIFF = 1.5         # centimetri, differenza knee-to-wall tra i lati
-SOGLIA_MOB_MINIMA = 9.0       # centimetri, sotto cui si segnala il rischio
+# SOGLIE — vedi RIFERIMENTI_SCIENTIFICI.md per la giustificazione di ciascuna.
+#
+# ASIMMETRIA 10%: soglia mutuata dalla letteratura sul ritorno allo sport dopo
+# ricostruzione del LCA (Limb Symmetry Index >= 90%). NON e' un valore
+# predittivo validato su atleti sani: fino a un quarto degli atleti sani non
+# lo raggiunge. Va trattato come innesco di approfondimento, non come diagnosi.
+SOGLIA_ASIMMETRIA = 10.0
+
+# DIFFERENZA CAVIGLIE 2.0 cm: nei soggetti sani le asimmetrie al knee-to-wall
+# arrivano tipicamente fino a 1.5 cm. Sopra i 2.0 cm si esce dal range di
+# normalita' senza segnalare mezza squadra. Alzata da 1.5 dopo revisione
+# della letteratura normativa sul weight-bearing lunge test.
+SOGLIA_MOB_DIFF = 2.0
+
+# DORSIFLESSIONE MINIMA 9.0 cm: convenzione operativa del weight-bearing lunge
+# test. L'evidenza prospettica sul basket (Backman e Danielson 2011) usa i
+# GRADI (soglia 36.5 gradi), non i centimetri: la corrispondenza fra le due
+# scale e' forte (r = 0.95) ma non e' una conversione esatta.
+SOGLIA_MOB_MINIMA = 9.0
+
+# MDC — minima variazione rilevabile al knee-to-wall: sotto 1.5 cm una
+# differenza fra due misurazioni rientra nell'errore dello strumento.
+MDC_MOB = 1.5
 TTL_CACHE = 300
 SLOT_DEFAULT = 15
 LOGO_LATO_MAX = 320           # pixel, ridimensionamento del logo caricato
