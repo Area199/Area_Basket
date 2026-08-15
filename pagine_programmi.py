@@ -109,6 +109,14 @@ def _genera(atleti, norme, targets, coach_id):
     c4, c5 = st.columns(2)
     minuti = c4.slider("Minuti di atletica per seduta", 10, 60, 25, step=5,
         help="Il tempo dedicato alla preparazione dentro l'allenamento.")
+    if minuti < mp.MINUTI_BLOCCO_MINIMI:
+        st.warning(
+            f"Con {minuti} minuti il blocco di attivazione arriva a circa "
+            f"{minuti*0.35:.0f} minuti. La dose documentata come efficace per la "
+            "prevenzione neuromuscolare è di 10-15 minuti, due o tre volte a "
+            "settimana, che richiede almeno 30 minuti di blocco. Sotto quella "
+            "soglia il lavoro resta pienamente valido, ma l'effetto protettivo "
+            "va sostenuto dai correttivi individuali quotidiani.")
     nome = c5.text_input("Nome del programma",
                          f"Preparazione {data_inizio.strftime('%B %Y')}")
 
