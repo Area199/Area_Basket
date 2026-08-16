@@ -30,6 +30,10 @@ def _intestazione_prove(col: str) -> list[str]:
         return ["DX 1", "DX 2", "SX 1", "SX 2", "MIGLIOR DX", "MIGLIOR SX"]
     if col == "mob_kneewall":
         return ["DX 1", "DX 2", "SX 1", "SX 2", "MIGLIOR DX", "MIGLIOR SX"]
+    if col == "ele_salto":
+        # Si annota l'altezza del tocco. La sottrazione del reach la fa il
+        # sistema: nessun calcolo a mano a bordo campo.
+        return ["REACH", "TOCCO 1", "TOCCO 2", "TOCCO 3", "TOCCO MIGLIORE"]
     n = meta["prove"]
     if n == 1:
         return ["RISULTATO"]
@@ -43,7 +47,14 @@ def _tabella_test(col: str, atleti) -> str:
     th = "".join(f'<th class="c">{c}</th>' for c in colonne)
     righe = ""
     for i, (_, a) in enumerate(atleti.iterrows(), start=1):
-        celle = "".join('<td class="v"></td>' for _ in colonne)
+        celle = ""
+        for c in colonne:
+            if c == "REACH":
+                r = a.get("reach")
+                val = f"{int(r)}" if r == r and r is not None else ""
+                celle += f'<td class="v pre">{val}</td>'
+            else:
+                celle += '<td class="v"></td>' 
         righe += (f'<tr><td class="n">{i}</td>'
                   f'<td class="a">{a["cognome"]} {a["nome"]}</td>'
                   f'<td class="r">{str(a["ruolo"])[:3].upper()}</td>{celle}</tr>')
@@ -123,6 +134,8 @@ td.r {{ width: 42px; text-align: center; font-size: 9px; color: #444; padding: 3
 th.n {{ width: 22px; }} th.a {{ width: 150px; text-align: left; padding-left: 6px; }}
 th.r {{ width: 42px; }}
 td.v {{ background: #FFF; }}
+td.pre {{ background: #F4F4F4; text-align: center; font-size: 10px;
+          color: #444; padding-top: 4px; }}
 tbody tr:nth-child(even) td.a, tbody tr:nth-child(even) td.n,
 tbody tr:nth-child(even) td.r {{ background: #FAFAFA; }}
 
@@ -158,7 +171,9 @@ tbody tr:nth-child(even) td.r {{ background: #FAFAFA; }}
   Invertirlo altera i risultati e rende il confronto con il retest privo di valore.<br>
   Riscaldamento standardizzato di 15 minuti prima del primo test,
   <b>identico anche al retest</b>. Si registra la prova migliore.
-  Una prova nulla si ripete, non si stima.
+  Una prova nulla si ripete, non si stima.<br>
+  <b>Elevazione:</b> si annota l'altezza del tocco, non la differenza.
+  Il reach e' gia' stampato e la sottrazione la fa il sistema.
 </div>
 
 {blocchi}
