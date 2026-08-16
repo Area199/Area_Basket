@@ -311,6 +311,20 @@ def _documenti(coach_id, d, mancanti, admin):
                    + ", ".join(ETICHETTE.get(m, m) for m in mancanti))
         return
 
+    # Un contratto generato con importi o date vuote e' un contratto che
+    # rischia di partire cosi'. Meglio dirlo prima di scaricarlo.
+    econ_mancanti = _condizioni_mancanti(d)
+    if econ_mancanti:
+        if admin:
+            st.error("**Condizioni economiche incomplete:** "
+                     + ", ".join(econ_mancanti)
+                     + ". Compilale nella scheda «Condizioni economiche», "
+                       "altrimenti il contratto esce con i campi vuoti.")
+        else:
+            st.info("Le condizioni economiche non sono ancora state definite da "
+                    "AREA199. Il contratto è consultabile, ma importi e durata "
+                    "compariranno solo dopo il completamento.")
+
     testo = _componi_contratto(d)
 
     st.markdown("**Contratto**")
@@ -373,6 +387,24 @@ def _documenti(coach_id, d, mancanti, admin):
 # COMPOSIZIONE DOCUMENTI
 # ==============================================================================
 
+def _condizioni_mancanti(d) -> list:
+    """Campi economici e di durata non ancora compilati dal direttore tecnico."""
+    fuori = []
+    if not d.get("contratto_data_inizio"):
+        fuori.append("data di inizio")
+    if not d.get("contratto_data_fine"):
+        fuori.append("data di scadenza")
+    att = d.get("importo_attivazione")
+    can = d.get("importo_canone")
+    try:
+        vuoto = (float(att or 0) == 0) and (float(can or 0) == 0)
+    except (TypeError, ValueError):
+        vuoto = True
+    if vuoto:
+        fuori.append("importi")
+    return fuori
+
+
 def _slug(d):
     base = str(d.get("organizzazione") or d.get("nome") or "cliente")
     return "".join(c if c.isalnum() else "_" for c in base)[:40]
@@ -391,6 +423,23 @@ def _data(d, k):
         return "—"
     try:
         return pd.to_datetime(x).strftime("%d/%m/%Y")
+    except Exception:
+        return "—"
+
+
+def _durata(d) -> str:
+    """Durata in settimane fra le due date, per leggibilita' del contratto."""
+    try:
+        i = pd.to_datetime(d.get("contratto_data_inizio"))
+        f = pd.to_datetime(d.get("contratto_data_fine"))
+        if pd.isna(i) or pd.isna(f):
+            return "—"
+        giorni = (f - i).days
+        if giorni <= 0:
+            return "—"
+        sett = giorni // 7
+        return (f"{sett} settimane ({giorni} giorni)" if sett
+                else f"{giorni} giorni")
     except Exception:
         return "—"
 
@@ -527,6 +576,7 @@ certificazione medico-sportiva, la cui acquisizione resta a carico del Cliente.<
 <table>
 <tr><th>Decorrenza</th><td>{_data(d,'contratto_data_inizio')}</td></tr>
 <tr><th>Scadenza</th><td>{_data(d,'contratto_data_fine')}</td></tr>
+<tr><th>Durata complessiva</th><td>{_durata(d)}</td></tr>
 </table>
 <p>Alla cessazione l'accesso viene disattivato. Il Cliente può richiedere entro
 30 giorni copia dei dati dei propri atleti in formato leggibile.</p>
@@ -606,8 +656,8 @@ articoli 5 (proprietà intellettuale) e 7 (dati personali).</p>
 Le Parti si impegnano a tentare preventivamente una composizione bonaria.</p>
 
 <h2>Allegati</h2>
-<p>A — Scheda del servizio · B — Riferimenti scientifici e note metodologiche ·
-C — Modelli di informativa e consenso (strumento di supporto)</p>
+<p>A — Vincoli operativi dichiarati · B — Riferimenti scientifici e note
+metodologiche · C — Modelli di informativa e consenso (strumento di supporto)</p>
 
 <h3>Vincoli operativi dichiarati dal Cliente</h3>
 <table>
@@ -624,6 +674,8 @@ Variazioni sostanziali vanno comunicate.</p>
   <div><div class="riga-firma">AREA199 — Dott. Antonio Petruzzi</div></div>
 </div>
 
+{_allegato_b()}
+
 <div class="nota" style="margin-top:26px">
 <b>Approvazione specifica ai sensi degli artt. 1341 e 1342 c.c.</b><br>
 Il Cliente dichiara di approvare espressamente gli articoli 5 (proprietà
@@ -637,6 +689,113 @@ limitazione), 9 (recesso e risoluzione), 10 (foro competente).
 
 <div class="pie">AREA199 — Human Performance Lab · Dott. Antonio Petruzzi</div>
 </body></html>"""
+
+
+def _allegato_b() -> str:
+    """
+    Allegato scientifico consegnato con il contratto.
+
+    Non e' un ornamento: l'art. 2.3 dichiara che i valori di riferimento non
+    sono standard certificati, e questo allegato e' cio' che rende quella
+    dichiarazione verificabile. Distingue in modo esplicito cio' che e'
+    sostenuto da studi da cio' che e' convenzione operativa.
+    """
+    return """
+<div style="page-break-before:always"></div>
+
+<h1 style="margin-top:0">Allegato B — Riferimenti scientifici</h1>
+<p style="color:#666;font-size:9.5pt">Note metodologiche sui protocolli di
+valutazione e sui valori di riferimento impiegati.</p>
+
+<div class="nota">
+<b>Tre livelli, dichiarati.</b> Ogni soglia impiegata dal sistema appartiene a
+uno di questi livelli, e viene indicata come tale:<br><br>
+<b>Evidenza</b> — sostenuta da studi prospettici o meta-analisi.<br>
+<b>Convenzione</b> — soglia operativa diffusa nella pratica, non validata come
+predittiva.<br>
+<b>Riferimento interno</b> — costruito da AREA199 sulla base della letteratura,
+non derivato da dati normativi pubblicati.
+</div>
+
+<h2>1 · Mobilità di caviglia</h2>
+<p><b>Livello: evidenza.</b> Uno studio prospettico su novanta giocatori di
+pallacanestro juniores d'élite, seguiti per un anno, ha rilevato che una ridotta
+escursione in dorsiflessione di caviglia predispone allo sviluppo di tendinopatia
+rotulea.</p>
+<p style="font-size:10pt">Backman LJ, Danielson P. <i>Low range of ankle
+dorsiflexion predisposes for patellar tendinopathy in junior elite basketball
+players: a 1-year prospective study.</i> Am J Sports Med. 2011;39(12):2626-2633.</p>
+<p><b>Precisazione.</b> La soglia individuata nello studio è espressa in
+<b>gradi</b>; il test impiegato dal sistema misura in <b>centimetri</b>. Le due
+scale sono fortemente correlate ma non sono convertibili in modo esatto. La
+soglia in centimetri adottata è pertanto una <b>convenzione operativa</b>, non
+la trasposizione diretta del dato dello studio.</p>
+<p><b>Affidabilità.</b> Il test in distanza mostra affidabilità eccellente
+(coefficienti di correlazione intraclasse fra 0,97 e 0,99), superiore a tutti
+gli altri test della batteria.</p>
+<p style="font-size:10pt">Bennell K, Talbot R, Wajswelner H, et al. <i>Intra-rater
+and inter-rater reliability of a weight-bearing lunge measure of ankle
+dorsiflexion.</i> Aust J Physiother. 1998;44(3):175-180.</p>
+
+<h2>2 · Asimmetria fra gli arti</h2>
+<p><b>Livello: convenzione, con riserve.</b> La soglia del 10% deriva dai criteri
+di ritorno allo sport dopo ricostruzione del legamento crociato anteriore
+(Limb Symmetry Index ≥ 90%). <b>Non è un valore predittivo validato su atleti
+sani</b>: una quota consistente di atleti sani non raggiunge tale soglia, e
+l'indice tende a sopravvalutare la funzione dell'arto.</p>
+<p style="font-size:10pt">Wellsandt E, Failla MJ, Snyder-Mackler L. <i>Limb
+symmetry indexes can overestimate knee function after anterior cruciate ligament
+injury.</i> J Orthop Sports Phys Ther. 2017;47(5):334-338.</p>
+<p>Nel sistema l'asimmetria <b>non concorre al punteggio complessivo</b> ed è
+trattata come innesco di approfondimento, non come diagnosi.</p>
+
+<h2>3 · Prevenzione neuromuscolare</h2>
+<p><b>Livello: evidenza.</b> Le meta-analisi su programmi di allenamento
+neuromuscolare riportano riduzioni consistenti degli infortuni: circa il 27% per
+gli infortuni di ginocchio e circa il 50% per le lesioni del legamento crociato
+anteriore.</p>
+<p><b>Dose.</b> L'effetto protettivo maggiore si osserva con sedute di 10-15
+minuti, due o tre volte a settimana. La struttura delle sedute prodotte dal
+sistema è costruita su questo dato.</p>
+
+<h2>4 · Limiti dichiarati della misurazione</h2>
+<p>La batteria è progettata per essere somministrata con metro e cronometro.
+Ne conseguono limiti che il Cliente prende atto:</p>
+<ul style="font-size:10pt;line-height:1.6">
+<li>il <b>cronometraggio manuale</b> introduce un errore superiore a quello
+delle fotocellule: su distanze brevi l'incidenza proporzionale è rilevante;</li>
+<li>su finestre inferiori alle quattro settimane il miglioramento atteso di
+sprint ed elevazione è dello stesso ordine dell'errore di misura, ragione per
+cui tali test sono <b>esclusi d'ufficio</b> dalle verifiche brevi;</li>
+<li>una variazione inferiore a 1,5 cm nel test di mobilità di caviglia rientra
+nell'errore dello strumento e non costituisce miglioramento;</li>
+<li>il confronto fra rilevazioni è valido solo a parità di riscaldamento,
+ordine di esecuzione e operatore addetto alla misurazione.</li>
+</ul>
+
+<h2>5 · Valori di riferimento</h2>
+<p><b>Livello: riferimento interno.</b> Le medie e le deviazioni standard
+impiegate per il calcolo dei punteggi sono riferimenti costruiti da AREA199 sulla
+base della letteratura disponibile per pallacanestro amatoriale e
+semi-professionistica, corretti per ruolo e per le condizioni di rilevazione.</p>
+<div class="nota">
+<b>Non esistono dati normativi pubblicati sulla popolazione di categoria
+italiana.</b> I valori impiegati non costituiscono pertanto standard normativi
+certificati e sono dichiarati come riferimenti interni in ogni referto prodotto.
+</div>
+
+<h2>6 · Cosa il sistema non fa</h2>
+<ul style="font-size:10pt;line-height:1.6">
+<li><b>Non diagnostica.</b> Nessuna soglia costituisce diagnosi clinica.</li>
+<li><b>Non predice l'infortunio sul singolo atleta.</b> Gli indicatori derivano
+da associazioni di popolazione.</li>
+<li><b>Non sostituisce la valutazione strumentale</b> né la certificazione
+medico-sportiva.</li>
+</ul>
+
+<div class="pie" style="margin-top:30px">AREA199 — Human Performance Lab ·
+Allegato tecnico al contratto</div>
+"""
 
 
 def _modulo_consenso(d, minore: bool) -> str:
