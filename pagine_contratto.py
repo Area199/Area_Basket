@@ -70,8 +70,12 @@ def pagina_profilo(coach_id, admin=False):
             f'Senza questi campi il contratto non può essere compilato.</div>',
             unsafe_allow_html=True)
 
-    tabs = st.tabs(["Logo", "Dati anagrafici", "Contratto e documenti"]
-                   + (["Condizioni economiche"] if admin else []))
+    if admin:
+        st.caption("Stai vedendo il profilo come lo vede il coach. Condizioni "
+                   "economiche, durata e attivazione si gestiscono da "
+                   "**Amministrazione**.")
+
+    tabs = st.tabs(["Logo", "Dati anagrafici", "Contratto e documenti"])
 
     with tabs[0]:
         _logo(coach_id, d)
@@ -79,9 +83,6 @@ def pagina_profilo(coach_id, admin=False):
         _anagrafica(coach_id, d)
     with tabs[2]:
         _documenti(coach_id, d, mancanti, admin)
-    if admin:
-        with tabs[3]:
-            _condizioni(coach_id, d)
 
 
 # ==============================================================================
@@ -239,9 +240,16 @@ def _anagrafica(coach_id, d):
 # CONDIZIONI ECONOMICHE — solo direttore tecnico
 # ==============================================================================
 
-def _condizioni(coach_id, d):
-    st.caption("Visibile solo al direttore tecnico. Il coach le vede compilate "
-               "nel contratto, non modificabili.")
+def pannello_condizioni(coach_id, d=None):
+    """
+    Condizioni economiche e durata del servizio.
+
+    Vive nella pagina Amministrazione, insieme alle altre leve commerciali:
+    slot, attivazione, sospensione. Il coach le vede solo compilate dentro
+    il contratto, e non puo' modificarle.
+    """
+    if d is None:
+        d = db.dati_coach_completi(coach_id)
 
     def v(k, default=None):
         x = d.get(k)
@@ -286,6 +294,47 @@ def _condizioni(coach_id, d):
                 st.rerun()
             else:
                 st.error(msg)
+
+
+def pannello_contratto_admin(coach_id, d=None):
+    """Stato del contratto e scarico del documento, dalla pagina Amministrazione."""
+    if d is None:
+        d = db.dati_coach_completi(coach_id)
+
+    mancanti = db.dati_mancanti(coach_id)
+    econ = _condizioni_mancanti(d)
+    acc = db.load_accettazioni(coach_id)
+    acc_c = acc[acc["documento"] == "contratto"] if not acc.empty else pd.DataFrame()
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Anagrafica cliente",
+                  "Completa" if not mancanti else f"{len(mancanti)} campi mancanti")
+    with c2:
+        st.metric("Condizioni", "Definite" if not econ else "Da definire")
+    with c3:
+        if not acc_c.empty:
+            st.metric("Accettazione",
+                      pd.to_datetime(acc_c.iloc[0]["accettato_il"]).strftime("%d/%m/%Y"))
+        else:
+            st.metric("Accettazione", "Non ancora")
+
+    if mancanti:
+        st.warning("Il cliente non ha ancora completato: "
+                   + ", ".join(ETICHETTE.get(m, m) for m in mancanti)
+                   + ". Puoi compilarli tu da «Profilo società» → Dati anagrafici.")
+        return
+    if econ:
+        st.error("Condizioni incomplete: " + ", ".join(econ)
+                 + ". Compilale qui sopra prima di generare il contratto.")
+        return
+
+    testo = _componi_contratto(d)
+    st.download_button("Scarica il contratto compilato", data=testo,
+                       file_name=f"AREA199_contratto_{_slug(d)}.html",
+                       mime="text/html", use_container_width=True)
+    with st.expander("Anteprima"):
+        st.components.v1.html(testo, height=560, scrolling=True)
 
 
 # ==============================================================================
