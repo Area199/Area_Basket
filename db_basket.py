@@ -84,8 +84,14 @@ META_TEST = {
         "protocollo": "Salto verticale al muro (Sargent)",
         "unita": "cm", "decimali": 1, "prove": 3, "recupero": "45 secondi",
         "min": 10.0, "max": 110.0, "step": 0.5,
-        "promemoria": "Stacco a piedi pari, nessuna rincorsa. "
-                      "Risultato = altezza tocco meno standing reach.",
+        # Si rileva e si trascrive l'ALTEZZA DEL TOCCO. La sottrazione dello
+        # standing reach la fa il sistema: chiedere una sottrazione a mano su
+        # quindici atleti a bordo campo e' il modo piu' rapido per introdurre
+        # errori che poi non sono piu' distinguibili dai dati veri.
+        "input_label": "Altezza tocco (cm)",
+        "input_min": 150.0, "input_max": 400.0,
+        "promemoria": "Stacco a piedi pari, nessuna rincorsa. Si registra "
+                      "l'ALTEZZA DEL TOCCO: il reach lo sottrae il sistema.",
         "sop": [
             "Metro a nastro fissato verticalmente su parete liscia. "
             "Polvere o gesso sulle dita della mano dominante.",
@@ -94,8 +100,9 @@ META_TEST = {
             "sola e si registra nell'anagrafica.",
             "SALTO: contromovimento libero di gambe e braccia, stacco a piedi "
             "pari senza passi ne' rincorsa, tocco del muro nel punto piu' alto.",
-            "Risultato = altezza del tocco meno standing reach, in centimetri.",
-            "Tre prove, si registra la migliore. Recupero 45 secondi.",
+            "Si trascrive l'ALTEZZA DEL TOCCO in centimetri, non la differenza: "
+            "l'elevazione la calcola il sistema sottraendo lo standing reach.",
+            "Tre prove, si registra il tocco piu'' alto. Recupero 45 secondi.",
             "Prova nulla: rincorsa, passo di stacco, doppio stacco.",
         ],
         "interpretazione": "Espressione di potenza degli arti inferiori. "
@@ -330,7 +337,8 @@ def verifica_accesso(pin: str) -> dict | None:
         master = str(st.secrets.get("pin_admin", "\x00")).strip()
         if master and pin == master:
             return {"ruolo": RUOLO_ADMIN, "utente_id": None,
-                    "nome": "Amministratore", "slot_max": None}
+                    "nome": "Amministratore", "slot_max": None,
+                    "stato_servizio": "attivo"}
     except Exception:
         pass
 
@@ -343,7 +351,8 @@ def verifica_accesso(pin: str) -> dict | None:
                     return {"errore": "Licenza scaduta. Contattare AREA199."}
                 _registra_accesso(u["id"])
                 return {"ruolo": RUOLO_PARTNER, "utente_id": u["id"],
-                        "nome": u["nome"], "slot_max": u["slot_max"]}
+                        "nome": u["nome"], "slot_max": u["slot_max"],
+                        "stato_servizio": u.get("stato_servizio", "preattivo")}
     except Exception:
         return None
     return None
@@ -454,6 +463,183 @@ def aggiorna_licenza(utente_id: int, slot_max: int | None = None,
         return True
     except Exception:
         return False
+
+
+CAMPI_ANAGRAFICI = [
+    "tipo_soggetto", "ragione_sociale", "legale_rappr", "codice_fiscale",
+    "partita_iva", "indirizzo", "cap", "citta", "provincia", "email",
+    "pec", "telefono", "categoria_squadra", "atleti_minorenni",
+    "organizzazione",
+]
+
+CAMPI_CONTRATTUALI = [
+    "contratto_data_inizio", "contratto_data_fine", "importo_attivazione",
+    "importo_canone", "periodicita_canone", "condizioni_note", "prezzo_pilota",
+    "sedute_settimana", "minuti_seduta", "attrezzatura_dich", "spazi_dich",
+]
+
+# Campi minimi perche' il contratto sia compilabile
+CAMPI_OBBLIGATORI = ["codice_fiscale", "indirizzo", "citta", "email"]
+
+
+def salva_dati_cliente(coach_id: int, dati: dict) -> tuple[bool, str]:
+    """Aggiorna anagrafica e/o condizioni contrattuali di un coach."""
+    try:
+        ammessi = set(CAMPI_ANAGRAFICI) | set(CAMPI_CONTRATTUALI)
+        campi = {k: v for k, v in dati.items() if k in ammessi}
+        for k, v in list(campi.items()):
+            if isinstance(v, str):
+                campi[k] = v.strip() or None
+            elif hasattr(v, "isoformat"):
+                campi[k] = v.isoformat()
+        if not campi:
+            return True, "nessuna modifica"
+        if any(k in campi for k in CAMPI_ANAGRAFICI):
+            campi["dati_completati_il"] = datetime.utcnow().isoformat()
+        get_client().table("utenti").update(campi).eq("id", coach_id).execute()
+        load_utenti.clear()
+        return True, "Dati salvati."
+    except Exception as e:
+        return False, str(e)
+
+
+def dati_mancanti(coach_id) -> list:
+    """Campi obbligatori ancora vuoti, per segnalarlo prima di generare atti."""
+    d = dati_coach_completi(coach_id)
+    if not d:
+        return CAMPI_OBBLIGATORI
+    return [c for c in CAMPI_OBBLIGATORI if not str(d.get(c) or "").strip()]
+
+
+def dati_coach_completi(coach_id) -> dict:
+    """Riga completa del coach dalla vista, come dizionario."""
+    if coach_id is None:
+        return {}
+    u = load_utenti()
+    if u.empty:
+        return {}
+    r = u[u["coach_id"] == coach_id]
+    return {} if r.empty else r.iloc[0].to_dict()
+
+
+def registra_accettazione(coach_id: int, documento: str, versione: str,
+                          nome: str, testo: str = "") -> tuple[bool, str]:
+    """
+    Registra l'accettazione di un documento in piattaforma.
+
+    NATURA GIURIDICA: firma elettronica semplice ai sensi del Regolamento
+    eIDAS. Non le si puo' negare valore probatorio, ma il suo peso e'
+    liberamente valutabile dal giudice ed e' inferiore a quello di una firma
+    autografa o di una firma elettronica qualificata. L'impronta del testo
+    serve a dimostrare che il documento non e' stato alterato dopo.
+    """
+    try:
+        impronta = hashlib.sha256(testo.encode("utf-8")).hexdigest() if testo else None
+        get_client().table("accettazioni").insert({
+            "coach_id": coach_id, "documento": documento, "versione": versione,
+            "nome_dichiarante": nome.strip(), "impronta_testo": impronta,
+        }).execute()
+        load_accettazioni.clear()
+        return True, "Accettazione registrata."
+    except Exception as e:
+        return False, str(e)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_accettazioni(coach_id=None) -> pd.DataFrame:
+    q = get_client().table("accettazioni").select("*")
+    if coach_id is not None:
+        q = q.eq("coach_id", coach_id)
+    return pd.DataFrame(q.order("accettato_il", desc=True).execute().data or [])
+
+
+STATI_SERVIZIO = {
+    "preattivo": "In attivazione",
+    "attivo": "Attivo",
+    "sospeso": "Sospeso",
+}
+
+
+def servizio_attivo() -> bool:
+    """
+    True se l'utente in sessione ha accesso pieno.
+
+    In stato 'preattivo' o 'sospeso' il coach entra ma vede solo la propria
+    anagrafica e il contratto: nessun atleta, nessun test, nessuna scheda.
+    L'amministratore non e' mai limitato.
+    """
+    if st.session_state.get("ruolo") == RUOLO_ADMIN:
+        return True
+    return st.session_state.get("stato_servizio") == "attivo"
+
+
+def cambia_stato_servizio(coach_id: int, nuovo_stato: str,
+                          motivo: str = "") -> tuple[bool, str]:
+    """
+    Passaggio di stato con registrazione nello storico.
+    L'attivazione e' un atto deliberato del direttore tecnico.
+    """
+    if nuovo_stato not in STATI_SERVIZIO:
+        return False, "Stato non valido."
+    try:
+        cl = get_client()
+        prec = (cl.table("utenti").select("stato_servizio")
+                .eq("id", coach_id).limit(1).execute())
+        stato_da = prec.data[0]["stato_servizio"] if prec.data else None
+
+        campi = {"stato_servizio": nuovo_stato}
+        if nuovo_stato == "attivo":
+            campi["attivato_il"] = datetime.utcnow().isoformat()
+            campi["sospeso_il"] = None
+        elif nuovo_stato == "sospeso":
+            campi["sospeso_il"] = datetime.utcnow().isoformat()
+        if motivo:
+            campi["note_attivazione"] = motivo.strip()
+
+        cl.table("utenti").update(campi).eq("id", coach_id).execute()
+        cl.table("storico_attivazioni").insert({
+            "coach_id": coach_id, "stato_da": stato_da, "stato_a": nuovo_stato,
+            "motivo": motivo.strip() or None}).execute()
+        load_utenti.clear()
+        return True, f"Servizio ora in stato: {STATI_SERVIZIO[nuovo_stato]}."
+    except Exception as e:
+        return False, str(e)
+
+
+def aggiorna_prerequisiti(coach_id: int, contratto: bool | None = None,
+                          pagamento: bool | None = None) -> bool:
+    """Spunta contratto ricevuto e pagamento ricevuto, senza attivare."""
+    try:
+        campi = {}
+        if contratto is not None:
+            campi["contratto_ricevuto"] = bool(contratto)
+        if pagamento is not None:
+            campi["pagamento_ricevuto"] = bool(pagamento)
+        if not campi:
+            return True
+        get_client().table("utenti").update(campi).eq("id", coach_id).execute()
+        load_utenti.clear()
+        return True
+    except Exception:
+        return False
+
+
+def prerequisiti_attivazione(coach_id) -> dict:
+    """
+    Stato dei tre requisiti che precedono l'attivazione.
+    Non bloccano: informano. La decisione resta del direttore tecnico.
+    """
+    d = dati_coach_completi(coach_id)
+    acc = load_accettazioni(coach_id)
+    accettato = (not acc.empty
+                 and (acc["documento"] == "contratto").any())
+    return {
+        "anagrafica": len(dati_mancanti(coach_id)) == 0,
+        "accettazione": accettato,
+        "contratto": bool(d.get("contratto_ricevuto")),
+        "pagamento": bool(d.get("pagamento_ricevuto")),
+        "stato": d.get("stato_servizio", "preattivo"),
+    }
 
 
 def slot_info(coach_id) -> dict:
@@ -681,6 +867,35 @@ def calcola_asimmetria(destra, sinistra) -> float | None:
         return None
     alto, basso = max(d, s), min(d, s)
     return round((alto - basso) / alto * 100, 1)
+
+
+def calcola_elevazione(altezza_tocco, reach) -> tuple[float | None, str | None]:
+    """
+    Elevazione = altezza del tocco meno standing reach.
+
+    Restituisce (valore, errore). L'errore e' un messaggio leggibile, non
+    un'eccezione: serve a dire al coach QUALE atleta ha il problema.
+    """
+    try:
+        t = float(altezza_tocco)
+    except (TypeError, ValueError):
+        return None, None
+    if pd.isna(t) or t <= 0:
+        return None, None
+
+    try:
+        r = float(reach)
+    except (TypeError, ValueError):
+        return None, "standing reach mancante in anagrafica"
+    if pd.isna(r) or r <= 0:
+        return None, "standing reach mancante in anagrafica"
+
+    salto = round(t - r, 1)
+    if salto <= 0:
+        return None, f"tocco ({t:.0f}) non superiore al reach ({r:.0f}): verificare"
+    if salto > 120:
+        return None, f"elevazione di {salto:.0f} cm implausibile: verificare i valori"
+    return salto, None
 
 
 def calcola_mobilita(destra, sinistra) -> tuple[float | None, float | None]:
