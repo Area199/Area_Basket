@@ -23,7 +23,8 @@ import streamlit as st
 import db_basket as db
 from foglio_campo import genera_foglio
 from pagine_programmi import pagina_programmazione, pagina_schede
-from pagine_contratto import pagina_profilo as pagina_profilo_societa
+from pagine_contratto import (pagina_profilo as pagina_profilo_societa,
+                              pannello_condizioni, pannello_contratto_admin)
 
 try:
     import openai
@@ -1165,45 +1166,59 @@ def pagina_admin():
                         "pieno": riga["slot_usati"] >= riga["slot_max"]},
                        f"Slot di {riga['nome']}")
 
-            _pannello_attivazione(uid, riga)
+            dati_coach = riga.to_dict()
+            g1, g2, g3 = st.tabs(["Attivazione", "Condizioni e durata",
+                                  "Contratto"])
 
-            st.divider()
-            g1, g2, g3 = st.columns(3)
             with g1:
-                nuovi = st.number_input("Slot concessi", 1, 200,
-                                        int(riga["slot_max"]), step=1)
-                if st.button("Aggiorna slot"):
-                    if nuovi < int(riga["slot_usati"]):
-                        st.error(f"Non si può scendere sotto i "
-                                 f"{int(riga['slot_usati'])} slot già occupati.")
-                    elif db.aggiorna_licenza(uid, slot_max=nuovi):
-                        st.success("Slot aggiornati.")
-                        st.rerun()
+                _pannello_attivazione(uid, riga)
+                st.divider()
+                st.markdown("**Licenza e accesso**")
+                h1, h2, h3 = st.columns(3)
+                with h1:
+                    nuovi = st.number_input("Slot atleti", 1, 200,
+                                            int(riga["slot_max"]), step=1)
+                    if st.button("Aggiorna slot"):
+                        if nuovi < int(riga["slot_usati"]):
+                            st.error(f"Non si può scendere sotto i "
+                                     f"{int(riga['slot_usati'])} slot occupati.")
+                        elif db.aggiorna_licenza(uid, slot_max=nuovi):
+                            st.success("Slot aggiornati.")
+                            st.rerun()
+                        else:
+                            st.error("Aggiornamento non riuscito.")
+                with h2:
+                    st.write("")
+                    st.write("")
+                    if st.button("Rigenera codice di accesso"):
+                        ok, res = db.rigenera_pin(uid)
+                        if ok:
+                            st.session_state["pin_nuovo"] = {"nome": riga["nome"],
+                                                             "pin": res}
+                            st.rerun()
+                        else:
+                            st.error(res)
+                    st.caption("Il precedente smette subito di funzionare.")
+                with h3:
+                    st.write("")
+                    st.write("")
+                    if riga["attivo"]:
+                        if st.button("Revoca l'accesso"):
+                            db.aggiorna_licenza(uid, attivo=False)
+                            st.rerun()
+                        st.caption("Impedisce del tutto il collegamento. "
+                                   "Per limitare senza escludere, usa la "
+                                   "sospensione del servizio qui sopra.")
                     else:
-                        st.error("Aggiornamento non riuscito.")
+                        if st.button("Ripristina l'accesso"):
+                            db.aggiorna_licenza(uid, attivo=True)
+                            st.rerun()
+
             with g2:
-                st.write("")
-                st.write("")
-                if st.button("Rigenera codice"):
-                    ok, res = db.rigenera_pin(uid)
-                    if ok:
-                        st.session_state["pin_nuovo"] = {"nome": riga["nome"],
-                                                         "pin": res}
-                        st.rerun()
-                    else:
-                        st.error(res)
-                st.caption("Il codice precedente smette subito di funzionare.")
+                pannello_condizioni(uid, dati_coach)
+
             with g3:
-                st.write("")
-                st.write("")
-                if riga["attivo"]:
-                    if st.button("Sospendi licenza"):
-                        db.aggiorna_licenza(uid, attivo=False)
-                        st.rerun()
-                else:
-                    if st.button("Riattiva licenza"):
-                        db.aggiorna_licenza(uid, attivo=True)
-                        st.rerun()
+                pannello_contratto_admin(uid, dati_coach)
 
     with t2:
         with st.form("nuovo_coach", clear_on_submit=True):
