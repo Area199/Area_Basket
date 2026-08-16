@@ -7,8 +7,9 @@ File richiesti nella stessa cartella:
     foglio_campo.py      generatore del foglio stampabile
     motore_programmi.py  analisi lacune, gruppi, generazione programmi
     pagine_programmi.py  schermate di programmazione e schede
+    pagine_contratto.py  profilo società, contratto, moduli di consenso
 
-Versione 5.0 — Agosto 2026
+Versione 6.0 — Agosto 2026
 Dott. Antonio Petruzzi — Senior Human Performance Specialist
 ================================================================================
 """
@@ -22,6 +23,7 @@ import streamlit as st
 import db_basket as db
 from foglio_campo import genera_foglio
 from pagine_programmi import pagina_programmazione, pagina_schede
+from pagine_contratto import pagina_profilo as pagina_profilo_societa
 
 try:
     import openai
@@ -274,6 +276,8 @@ def schermata_login():
                     st.session_state["ruolo"] = esito["ruolo"]
                     st.session_state["utente_id"] = esito["utente_id"]
                     st.session_state["utente_nome"] = esito["nome"]
+                    st.session_state["stato_servizio"] = esito.get(
+                        "stato_servizio", "preattivo")
                     st.rerun()
                 else:
                     st.error("Codice non riconosciuto.")
@@ -479,7 +483,29 @@ def pagina_sessione(atleti, logo_b64=""):
         st.markdown(f"### {m['sigla']} — {m['label']}")
         st.caption(f"{m['protocollo']} · {m['promemoria']}")
 
-        if col_test in ("asi_monopodalico", "mob_kneewall"):
+        if col_test == "ele_salto":
+            # Si inserisce l'ALTEZZA DEL TOCCO; il reach compare in sola lettura
+            # come promemoria e la sottrazione la fa il sistema al salvataggio.
+            base = pd.DataFrame({
+                "Atleta": nomi, "Ruolo": ruoli,
+                "Reach (cm)": [int(r["reach"]) if pd.notna(r.get("reach")) else None
+                               for _, r in convocati.iterrows()],
+                "Tocco (cm)": [None] * len(convocati)})
+            cfg = {"Atleta": st.column_config.TextColumn(disabled=True, width="medium"),
+                   "Ruolo": st.column_config.TextColumn(disabled=True, width="small"),
+                   "Reach (cm)": st.column_config.NumberColumn(
+                       disabled=True, format="%d", width="small",
+                       help="Dall'anagrafica. Il sistema lo sottrae da solo."),
+                   "Tocco (cm)": st.column_config.NumberColumn(
+                       format="%.1f", min_value=150.0, max_value=400.0, step=0.5,
+                       help="Altezza massima toccata al muro. NON la differenza.")}
+            senza_reach = [n for n, (_, r) in zip(nomi, convocati.iterrows())
+                           if pd.isna(r.get("reach"))]
+            if senza_reach:
+                st.warning("Senza standing reach in anagrafica, l'elevazione non è "
+                           "calcolabile per: " + ", ".join(senza_reach)
+                           + ". Inseriscilo nella sezione Rosa.")
+        elif col_test in ("asi_monopodalico", "mob_kneewall"):
             base = pd.DataFrame({"Atleta": nomi, "Ruolo": ruoli,
                                  "Destra (cm)": [None] * len(convocati),
                                  "Sinistra (cm)": [None] * len(convocati)})
@@ -525,7 +551,14 @@ def salva_sessione(atleti, test_scelti, data_test, sessione):
                 continue
             riga = griglia.iloc[i]
 
-            if col_test == "asi_monopodalico":
+            if col_test == "ele_salto":
+                salto, err = db.calcola_elevazione(riga["Tocco (cm)"],
+                                                   a.get("reach"))
+                if salto is not None:
+                    misure["ele_salto"] = salto
+                elif err:
+                    errori.append(f"{a['cognome']} (elevazione): {err}")
+            elif col_test == "asi_monopodalico":
                 asi = db.calcola_asimmetria(riga["Destra (cm)"], riga["Sinistra (cm)"])
                 if asi is not None:
                     misure["asi_monopodalico"] = asi
@@ -899,6 +932,60 @@ def pagina_rosa(atleti, coach_id, info_slot, squadra_default=""):
         st.warning(f"{len(mancanti)} atleti senza standing reach: "
                    "l'elevazione non sarà misurabile correttamente per loro.")
 
+    with st.expander("✏️  Modifica un atleta"):
+        st.caption("Peso e parametri antropometrici cambiano nel tempo, "
+                   "soprattutto nei più giovani. E un carattere digitato male "
+                   "va corretto, non lasciato lì.")
+        em = {f"{r['cognome']} {r['nome']}": r["id"] for _, r in atleti.iterrows()}
+        sel = st.selectbox("Atleta da modificare", list(em.keys()), key="mod_sel")
+        a = atleti[atleti["id"] == em[sel]].iloc[0]
+
+        def _val(campo, default):
+            v = a.get(campo)
+            return default if pd.isna(v) else v
+
+        with st.form("modifica_atleta"):
+            m1, m2, m3 = st.columns([2, 2, 1])
+            m_nome = m1.text_input("Nome", value=str(a["nome"]))
+            m_cogn = m2.text_input("Cognome", value=str(a["cognome"]))
+            m_anno = m3.number_input("Anno nascita", 1960, date.today().year,
+                                     int(_val("anno_nascita", 2000)), step=1)
+            m4, m5, m6 = st.columns(3)
+            m_squadra = m4.text_input("Squadra",
+                                      value=str(_val("squadra", squadra_default) or ""))
+            m_ruolo = m5.selectbox("Ruolo", db.RUOLI,
+                                   index=db.RUOLI.index(a["ruolo"])
+                                   if a["ruolo"] in db.RUOLI else 0)
+            mani = ["Dx", "Sx", "Ambidestro"]
+            m_mano = m6.selectbox("Mano", mani,
+                                  index=mani.index(a["mano"])
+                                  if a.get("mano") in mani else 0)
+            m7, m8, m9, m10 = st.columns(4)
+            m_peso = m7.number_input("Peso (kg)", 40.0, 160.0,
+                                     float(_val("peso", 78.0)), step=0.5)
+            m_alt = m8.number_input("Altezza (cm)", 150, 230,
+                                    int(_val("altezza", 185)), step=1)
+            m_reach = m9.number_input("Standing reach (cm)", 180, 290,
+                                      int(_val("reach", 240)), step=1)
+            m_apert = m10.number_input("Apertura braccia (cm)", 150, 250,
+                                       int(_val("apertura", 188)), step=1)
+
+            st.caption("Il codice atleta non cambia: lo storico dei test "
+                       "resta collegato.")
+            if st.form_submit_button("Salva modifiche", type="primary"):
+                ok, msg = db.salva_atleta({
+                    "id": a["id"], "nome": m_nome.strip(),
+                    "cognome": m_cogn.strip(), "anno_nascita": int(m_anno),
+                    "squadra": m_squadra.strip() or None, "ruolo": m_ruolo,
+                    "mano": m_mano, "peso": m_peso, "altezza": int(m_alt),
+                    "reach": int(m_reach), "apertura": int(m_apert),
+                    "attivo": True}, coach_id=coach_id)
+                if ok:
+                    st.success("Modifiche salvate.")
+                    st.rerun()
+                else:
+                    st.error(msg)
+
     with st.expander("Rimuovi un atleta dalla rosa"):
         st.caption("L'atleta esce dalla rosa attiva e lo slot torna libero. "
                    "Lo storico dei suoi test resta nel database.")
@@ -916,72 +1003,92 @@ def pagina_rosa(atleti, coach_id, info_slot, squadra_default=""):
 # PAGINA — PROFILO SOCIETA' (logo)
 # ==============================================================================
 
-def pagina_profilo(coach_id):
-    st.title("Profilo società")
-
-    if coach_id is None:
-        st.info("Seleziona una squadra nella barra laterale per gestirne il profilo.")
-        return
-
-    dati = db.dati_coach(coach_id)
-
-    c1, c2 = st.columns([1, 1.4])
-    with c1:
-        st.markdown("**Logo attuale**")
-        if dati["logo_b64"]:
-            st.markdown(f'<div style="background:{GRIGIO};border:1px solid #33333B;'
-                        f'border-radius:8px;padding:22px;text-align:center">'
-                        f'<img src="{dati["logo_b64"]}" style="max-height:130px;'
-                        f'max-width:100%;object-fit:contain"></div>',
-                        unsafe_allow_html=True)
-        else:
-            st.markdown(f'<div style="background:{GRIGIO};border:1px dashed #44444E;'
-                        f'border-radius:8px;padding:44px;text-align:center;'
-                        f'color:{TESTO_3};font-size:13px">Nessun logo caricato</div>',
-                        unsafe_allow_html=True)
-
-    with c2:
-        st.markdown("**Carica un nuovo logo**")
-        st.caption("PNG o JPG. Viene ridimensionato automaticamente e comparirà "
-                   "sul foglio di campo stampabile e nella barra laterale.")
-        file = st.file_uploader("Immagine", type=["png", "jpg", "jpeg", "webp"],
-                                label_visibility="collapsed")
-        if file is not None:
-            ok, res = db.prepara_logo(file)
-            if not ok:
-                st.error(res)
-            else:
-                st.markdown("Anteprima:")
-                st.markdown(f'<img src="{res}" style="max-height:90px;'
-                            f'background:{GRIGIO};padding:10px;border-radius:6px">',
-                            unsafe_allow_html=True)
-                if st.button("Salva logo", type="primary"):
-                    if db.salva_logo(coach_id, res):
-                        st.success("Logo salvato.")
-                        st.rerun()
-                    else:
-                        st.error("Salvataggio non riuscito.")
-
-        if dati["logo_b64"]:
-            st.write("")
-            if st.button("Rimuovi il logo"):
-                if db.salva_logo(coach_id, ""):
-                    st.success("Logo rimosso.")
-                    st.rerun()
-
-    st.divider()
-    st.markdown("**Dati della licenza**")
-    info = db.slot_info(coach_id)
-    c = st.columns(3)
-    c[0].metric("Società", dati["organizzazione"] or "—")
-    c[1].metric("Referente", dati["nome"] or "—")
-    c[2].metric("Slot atleti", f"{info['usati']} / {info['max']}"
-                if info["max"] else "—")
-
-
 # ==============================================================================
 # PAGINA — AMMINISTRAZIONE
 # ==============================================================================
+
+
+def _pannello_attivazione(uid, riga):
+    """
+    Attivazione del servizio: la leva commerciale.
+    I prerequisiti informano, non bloccano: la decisione resta del
+    direttore tecnico, che puo' attivare anche in deroga se lo ritiene.
+    """
+    pre = db.prerequisiti_attivazione(uid)
+    stato = pre["stato"]
+    etichetta = db.STATI_SERVIZIO.get(stato, stato)
+    colore = {"attivo": VERDE, "preattivo": ORO, "sospeso": ROSSO}.get(stato, ORO)
+
+    st.markdown(
+        f'<div style="background:{GRIGIO};border-left:3px solid {colore};'
+        f'border-radius:6px;padding:14px 18px;margin-bottom:12px">'
+        f'<span style="color:{colore};font-weight:700;font-size:14px;'
+        f'text-transform:uppercase;letter-spacing:1px">{etichetta}</span>'
+        + (f'<span style="color:{TESTO_2};font-size:12px;margin-left:10px">'
+           f'dal {pd.to_datetime(riga["attivato_il"]).strftime("%d/%m/%Y")}</span>'
+           if stato == "attivo" and pd.notna(riga.get("attivato_il")) else "")
+        + '</div>', unsafe_allow_html=True)
+
+    voci = [
+        ("Anagrafica completata dal cliente", pre["anagrafica"]),
+        ("Condizioni accettate in piattaforma", pre["accettazione"]),
+        ("Contratto firmato ricevuto", pre["contratto"]),
+        ("Pagamento ricevuto", pre["pagamento"]),
+    ]
+    c = st.columns(4)
+    for i, (testo, fatto) in enumerate(voci):
+        with c[i]:
+            simbolo = "✓" if fatto else "○"
+            col = VERDE if fatto else TESTO_3
+            st.markdown(
+                f'<div style="text-align:center;padding:10px 6px">'
+                f'<div style="font-size:24px;color:{col};line-height:1">{simbolo}</div>'
+                f'<div style="font-size:10.5px;color:{TESTO_2};margin-top:5px;'
+                f'line-height:1.35">{testo}</div></div>', unsafe_allow_html=True)
+
+    st.write("")
+    s1, s2 = st.columns(2)
+    with s1:
+        contr = st.checkbox("Contratto firmato ricevuto",
+                            value=pre["contratto"], key=f"contr_{uid}")
+    with s2:
+        pag = st.checkbox("Pagamento ricevuto",
+                          value=pre["pagamento"], key=f"pag_{uid}")
+    if contr != pre["contratto"] or pag != pre["pagamento"]:
+        if st.button("Aggiorna i riscontri", key=f"aggpre_{uid}"):
+            db.aggiorna_prerequisiti(uid, contr, pag)
+            st.rerun()
+
+    st.write("")
+    if stato != "attivo":
+        pronti = pre["contratto"] and pre["pagamento"]
+        if not pronti:
+            st.caption("Contratto e pagamento non risultano ancora ricevuti. "
+                       "Puoi attivare comunque, se hai motivo di farlo.")
+        motivo = st.text_input("Nota interna sull'attivazione",
+                               key=f"mot_{uid}",
+                               placeholder="Es. pagamento ricevuto con bonifico del …")
+        if st.button("🔓  ATTIVA IL SERVIZIO", type="primary",
+                     key=f"att_{uid}", use_container_width=True):
+            ok, msg = db.cambia_stato_servizio(uid, "attivo", motivo)
+            (st.success if ok else st.error)(msg)
+            if ok:
+                st.rerun()
+    else:
+        a1, a2 = st.columns([2, 1])
+        motivo = a1.text_input("Motivo della sospensione", key=f"mots_{uid}",
+                               placeholder="Es. canone di ottobre non pervenuto")
+        a2.write("")
+        a2.write("")
+        if a2.button("Sospendi il servizio", key=f"sosp_{uid}"):
+            ok, msg = db.cambia_stato_servizio(uid, "sospeso", motivo)
+            (st.success if ok else st.error)(msg)
+            if ok:
+                st.rerun()
+        st.caption("La sospensione riduce l'accesso del coach alla sola "
+                   "anagrafica. Nessun dato viene perduto e la riattivazione "
+                   "è immediata.")
+
 
 def pagina_admin():
     st.title("Amministrazione")
@@ -990,8 +1097,14 @@ def pagina_admin():
     c = st.columns(4)
     with c[0]: kpi(len(utenti), "Coach registrati")
     with c[1]:
-        kpi(int(utenti["attivo"].sum()) if not utenti.empty else 0,
-            "Licenze attive", VERDE)
+        n_att = (int((utenti["stato_servizio"] == "attivo").sum())
+                 if not utenti.empty and "stato_servizio" in utenti.columns
+                 else (int(utenti["attivo"].sum()) if not utenti.empty else 0))
+        n_pre = (int((utenti["stato_servizio"] == "preattivo").sum())
+                 if not utenti.empty and "stato_servizio" in utenti.columns else 0)
+        kpi(n_att, "Servizi attivi", VERDE)
+        if n_pre:
+            st.caption(f"{n_pre} in attesa di attivazione")
     with c[2]:
         kpi(int(utenti["slot_max"].sum()) if not utenti.empty else 0, "Slot concessi")
     with c[3]:
@@ -1006,7 +1119,14 @@ def pagina_admin():
             f'<div class="a199-pin-cod">{p["pin"]}</div>'
             f'<div style="color:#A8D8A8;font-size:12px;margin-top:9px">'
             f'Comunicalo adesso. Non viene salvato in chiaro e non è più '
-            f'recuperabile: se si perde, si rigenera.</div></div>',
+            f'recuperabile: se si perde, si rigenera.</div>'
+            + ('<div style="color:#D8C88A;font-size:12px;margin-top:9px;'
+               'border-top:1px solid #2A4020;padding-top:8px">Il coach entra in '
+               '<b>stato di attivazione</b>: potrà solo completare la propria '
+               'anagrafica e leggere il contratto. Le sezioni di lavoro si '
+               'sbloccano dal pannello «Licenze attive» quando avrai ricevuto '
+               'contratto e pagamento.</div>' if p.get('preattivo') else '')
+            + '</div>',
             unsafe_allow_html=True)
         if st.button("Ho annotato il codice"):
             del st.session_state["pin_nuovo"]
@@ -1022,7 +1142,9 @@ def pagina_admin():
             vis = utenti.copy()
             vis["Utilizzo"] = vis.apply(
                 lambda r: f"{r['slot_usati']}/{r['slot_max']}", axis=1)
-            vis["Stato"] = vis["attivo"].map({True: "Attiva", False: "Sospesa"})
+            vis["Stato"] = vis["stato_servizio"].map(db.STATI_SERVIZIO) \
+                if "stato_servizio" in vis.columns \
+                else vis["attivo"].map({True: "Attiva", False: "Sospesa"})
             st.dataframe(
                 vis[["nome", "organizzazione", "Utilizzo", "Stato", "scadenza",
                      "ultimo_accesso"]],
@@ -1043,6 +1165,9 @@ def pagina_admin():
                         "pieno": riga["slot_usati"] >= riga["slot_max"]},
                        f"Slot di {riga['nome']}")
 
+            _pannello_attivazione(uid, riga)
+
+            st.divider()
             g1, g2, g3 = st.columns(3)
             with g1:
                 nuovi = st.number_input("Slot concessi", 1, 200,
@@ -1102,7 +1227,8 @@ def pagina_admin():
                 else:
                     ok, msg, pin = db.crea_utente(nome, org, slot, scad, note)
                     if ok:
-                        st.session_state["pin_nuovo"] = {"nome": nome, "pin": pin}
+                        st.session_state["pin_nuovo"] = {"nome": nome, "pin": pin,
+                                                         "preattivo": True}
                         st.rerun()
                     else:
                         st.error(msg)
@@ -1209,11 +1335,16 @@ def main():
                 coach_id = sel
             st.divider()
 
-        voci = ["Panoramica squadra", "Sessione test", "Scheda atleta",
-                "Confronto T0/T1", "Schede di lavoro", "Rosa", "Protocolli",
-                "Profilo società"]
-        if db.puo("gestisce_utenti"):
-            voci.insert(4, "Programmazione")
+        if db.servizio_attivo():
+            voci = ["Panoramica squadra", "Sessione test", "Scheda atleta",
+                    "Confronto T0/T1", "Schede di lavoro", "Rosa", "Protocolli",
+                    "Profilo società"]
+            if db.puo("gestisce_utenti"):
+                voci.insert(4, "Programmazione")
+        else:
+            # In attesa di attivazione il coach vede solo la propria scheda:
+            # completa l'anagrafica e legge il contratto, nient'altro.
+            voci = ["Profilo società"]
         if db.puo("vede_norme"):
             voci.append("Norme")
         if db.puo("gestisce_utenti"):
@@ -1247,6 +1378,33 @@ def main():
     squadra_default = db.dati_coach(coach_id).get("organizzazione", "") \
         if coach_id is not None else ""
 
+    if not db.servizio_attivo():
+        stato = st.session_state.get("stato_servizio", "preattivo")
+        if stato == "sospeso":
+            st.markdown(
+                f'<div style="background:rgba(224,49,49,0.12);border-left:3px solid '
+                f'{ROSSO};padding:14px 18px;font-size:13.5px;color:#FFB0B0;'
+                f'line-height:1.6;margin-bottom:16px"><b>Servizio sospeso.</b><br>'
+                f'I dati della squadra sono conservati e nulla è andato perduto. '
+                f'Per riattivare il servizio contatta AREA199.</div>',
+                unsafe_allow_html=True)
+        else:
+            st.markdown(
+                f'<div style="background:rgba(201,162,39,0.1);border-left:3px solid '
+                f'{ORO};padding:14px 18px;font-size:13.5px;color:{TESTO};'
+                f'line-height:1.6;margin-bottom:16px">'
+                f'<b>Servizio in attivazione.</b><br>'
+                f'Puoi già completare i tuoi dati e leggere il contratto. Le '
+                f'sezioni di lavoro — rosa, test, schede — si sbloccano alla '
+                f'conferma dell\'attivazione da parte di AREA199.<br>'
+                f'<span style="color:{TESTO_2};font-size:12.5px">Per accelerare: '
+                f'completa l\'anagrafica qui sotto e restituisci il contratto '
+                f'firmato.</span></div>', unsafe_allow_html=True)
+        pagina_profilo_societa(coach_id, admin=False)
+        st.markdown('<div class="a199-foot">AREA199 — Human Performance Lab · '
+                    'Dott. Antonio Petruzzi</div>', unsafe_allow_html=True)
+        return
+
     if pagina == "Panoramica squadra":
         pagina_panoramica(atleti, norme, targets, info_slot)
     elif pagina == "Sessione test":
@@ -1269,7 +1427,7 @@ def main():
     elif pagina == "Protocolli":
         pagina_protocolli()
     elif pagina == "Profilo società":
-        pagina_profilo(coach_id)
+        pagina_profilo_societa(coach_id, admin=admin)
     elif pagina == "Norme":
         pagina_norme(norme)
     elif pagina == "Amministrazione":
