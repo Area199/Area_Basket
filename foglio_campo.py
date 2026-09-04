@@ -23,6 +23,57 @@ from datetime import date
 import db_basket as db
 
 
+# ============================================================================
+# RISCALDAMENTO STANDARD
+#
+# Stampato sul foglio perche' e' un VINCOLO, non un suggerimento: al retest
+# va ripetuto identico. Se cambia il riscaldamento cambiano i numeri, e la
+# differenza misurata non e' piu' attribuibile all'allenamento.
+#
+# Nessun allungamento statico prima dei test: riduce temporaneamente
+# l'espressione di potenza e falsa salto e sprint.
+# ============================================================================
+
+RISCALDAMENTO = [
+    ("3 min", "Corsa blanda",
+     "Ritmo conversazionale: devono poter parlare mentre corrono."),
+    ("4 min", "Mobilita' dinamica",
+     "Caviglia: affondo avanti spingendo il ginocchio oltre la punta con "
+     "tallone a terra, 10 per gamba. Anca: slanci frontali e laterali, "
+     "10 per lato. Sempre in movimento."),
+    ("4 min", "Andature su 20 metri",
+     "Skip basso, calciata, corsa laterale per lato, corsa all'indietro. "
+     "Ritorno camminando."),
+    ("4 min", "Attivazione",
+     "3 accelerazioni progressive su 20 m (70%, 85%, 95%). 5 saltelli "
+     "reattivi sul posto. 2 scivolamenti difensivi da 10 secondi."),
+    ("3 min", "Pausa", "Recupero prima del primo test."),
+]
+
+
+def _blocco_riscaldamento() -> str:
+    righe = "".join(
+        f'<tr><td class="tempo">{t}</td><td class="fase"><b>{n}</b></td>'
+        f'<td class="desc">{d}</td></tr>'
+        for t, n, d in RISCALDAMENTO)
+    return f"""
+<section class="blocco risc">
+  <div class="titolo">
+    <span class="sigla">0</span>
+    <span class="nome">Riscaldamento standard</span>
+    <span class="unita">15 minuti + 3 di pausa</span>
+  </div>
+  <div class="proto">
+    <b>Da ripetere IDENTICO al retest.</b> Se cambia il riscaldamento cambiano
+    i risultati, e la differenza misurata non e' piu' attribuibile
+    all'allenamento.<br>
+    <b>Nessun allungamento statico prima dei test:</b> riduce temporaneamente
+    la potenza espressa e falsa salto e sprint. Semmai a fine sessione.
+  </div>
+  <table>{righe}</table>
+</section>"""
+
+
 def _intestazione_prove(col: str) -> list[str]:
     """Colonne da stampare per un test, in base alle prove previste."""
     meta = db.META_TEST[col]
@@ -136,6 +187,11 @@ th.r {{ width: 42px; }}
 td.v {{ background: #FFF; }}
 td.pre {{ background: #F4F4F4; text-align: center; font-size: 10px;
           color: #444; padding-top: 4px; }}
+.risc td {{ height: auto; padding: 5px 8px; }}
+td.tempo {{ width: 52px; text-align: center; font-weight: bold; font-size: 10px;
+            background: #F7F7F7; }}
+td.fase {{ width: 150px; font-size: 10.5px; }}
+td.desc {{ font-size: 9.5px; color: #333; line-height: 1.4; }}
 tbody tr:nth-child(even) td.a, tbody tr:nth-child(even) td.n,
 tbody tr:nth-child(even) td.r {{ background: #FAFAFA; }}
 
@@ -162,7 +218,7 @@ tbody tr:nth-child(even) td.r {{ background: #FAFAFA; }}
   <div class="dati">
     <b>FOGLIO DI RILEVAZIONE — {sessione}</b><br>
     {squadra or 'Squadra'} · {data_test.strftime('%d/%m/%Y')}<br>
-    Atleti convocati: {len(atleti)}
+    Atleti convocati: {len(atleti)} · Ora inizio ______ · Meteo __________
   </div>
 </div>
 
@@ -175,6 +231,8 @@ tbody tr:nth-child(even) td.r {{ background: #FAFAFA; }}
   <b>Elevazione:</b> si annota l'altezza del tocco, non la differenza.
   Il reach e' gia' stampato e la sottrazione la fa il sistema.
 </div>
+
+{_blocco_riscaldamento()}
 
 {blocchi}
 
