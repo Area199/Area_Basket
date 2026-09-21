@@ -25,6 +25,7 @@ from foglio_campo import genera_foglio
 from pagine_programmi import pagina_programmazione, pagina_schede
 from pagine_contratto import (pagina_profilo as pagina_profilo_societa,
                               pannello_condizioni, pannello_contratto_admin)
+from pagine_documenti import pagina_documenti_admin, pagina_documenti_coach
 
 try:
     import openai
@@ -1352,8 +1353,8 @@ def main():
 
         if db.servizio_attivo():
             voci = ["Panoramica squadra", "Sessione test", "Scheda atleta",
-                    "Confronto T0/T1", "Schede di lavoro", "Rosa", "Protocolli",
-                    "Profilo società"]
+                    "Confronto T0/T1", "Schede di lavoro", "Documenti", "Rosa",
+                    "Protocolli", "Profilo società"]
             if db.puo("gestisce_utenti"):
                 voci.insert(4, "Programmazione")
         else:
@@ -1439,6 +1440,11 @@ def main():
         pagina_programmazione(atleti, norme, targets, coach_id, logo)
     elif pagina == "Schede di lavoro":
         pagina_schede(coach_id, atleti, logo)
+    elif pagina == "Documenti":
+        if admin:
+            pagina_documenti_admin(coach_id)
+        else:
+            pagina_documenti_coach(coach_id)
     elif pagina == "Protocolli":
         pagina_protocolli()
     elif pagina == "Profilo società":
