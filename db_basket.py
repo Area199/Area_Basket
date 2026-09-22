@@ -744,7 +744,7 @@ def load_test(atleta_id: str | None = None) -> pd.DataFrame:
             "id", "atleta_id", "data_test", "sessione", "eta", "peso", "altezza",
             "mob_kneewall", "mob_diff", "ele_salto", "acc_10m", "agi_lane",
             "res_navetta", "for_piegamenti", "asi_monopodalico", "note",
-            "ai_comment"] + MISURE_GREZZE)
+            "ai_comment", "stagione", "date_misure"] + MISURE_GREZZE)
     for c in list(ASSI.values()) + ["asi_monopodalico", "mob_diff", "peso"] \
             + MISURE_GREZZE:
         if c in df.columns:
@@ -983,42 +983,67 @@ def _pulisci(v):
     return v
 
 
+def stagione_da_data(d) -> str:
+    """Stagione sportiva agosto-luglio: 2026-09-11 -> '2026-27'."""
+    d = pd.to_datetime(d).date()
+    if d.month >= 8:
+        return f"{d.year}-{str(d.year + 1)[-2:]}"
+    return f"{d.year - 1}-{str(d.year)[-2:]}"
+
+
 def salva_misure(atleta_id: str, data_test, sessione: str,
-                 misure: dict, meta: dict | None = None) -> tuple[bool, str]:
+                 misure: dict, meta: dict | None = None):
     """
-    Salva UNA O PIU' misure senza toccare quelle gia' presenti.
+    Aggiunge misure alla sessione di un atleta.
+
+    IDENTITA' DELLA SESSIONE
+    ------------------------
+    Una sessione e' la T (T0, T1...) di una stagione, non un giorno. I test
+    di una stessa T possono essere misurati in giorni diversi: data_test
+    indica il GIORNO DI MISURAZIONE, che viene registrato per ciascun test
+    in date_misure. La riga resta una sola: (atleta, stagione, sessione).
 
     PERCHE' NON E' UN UPSERT
     ------------------------
-    I test si inseriscono una griglia alla volta: prima la mobilita' di tutti,
-    poi l'elevazione di tutti. Un upsert completo riscriverebbe l'intera riga
-    e azzererebbe i test salvati prima. Qui si cerca la riga della sessione e
-    si aggiornano SOLO le colonne effettivamente passate.
+    Si aggiornano SOLO le colonne passate. Un upsert completo riscriverebbe
+    la riga e azzererebbe i test salvati in altri giorni.
+
+    Restituisce (True, {"sostituiti": [test che avevano gia' un valore]})
+    oppure (False, messaggio di errore).
     """
     try:
         d = (data_test.isoformat()[:10]
              if isinstance(data_test, (date, datetime)) else str(data_test)[:10])
+        stagione = stagione_da_data(d)
 
         campi = {k: _pulisci(v) for k, v in misure.items()}
         campi = {k: v for k, v in campi.items() if v is not None}
         if not campi:
-            return True, "nessun dato"
+            return True, {"sostituiti": []}
 
+        toccati = [c for c in ORDINE_TEST if c in campi]
         cl = get_client()
-        esistente = (cl.table("test_sessioni").select("id")
-                     .eq("atleta_id", atleta_id).eq("data_test", d)
+        esistente = (cl.table("test_sessioni").select("*")
+                     .eq("atleta_id", atleta_id).eq("stagione", stagione)
                      .eq("sessione", sessione).limit(1).execute())
 
         if esistente.data:
-            cl.table("test_sessioni").update(campi) \
-                .eq("id", esistente.data[0]["id"]).execute()
+            riga = esistente.data[0]
+            sostituiti = [c for c in toccati if riga.get(c) is not None]
+            date_misure = dict(riga.get("date_misure") or {})
+            date_misure.update({c: d for c in toccati})
+            campi["date_misure"] = date_misure
+            cl.table("test_sessioni").update(campi).eq("id", riga["id"]).execute()
         else:
-            nuovo = {"atleta_id": atleta_id, "data_test": d, "sessione": sessione}
+            sostituiti = []
+            nuovo = {"atleta_id": atleta_id, "data_test": d, "sessione": sessione,
+                     "stagione": stagione,
+                     "date_misure": {c: d for c in toccati}}
             if meta:
                 nuovo.update({k: _pulisci(v) for k, v in meta.items()})
             nuovo.update(campi)
             cl.table("test_sessioni").insert(nuovo).execute()
-        return True, "ok"
+        return True, {"sostituiti": sostituiti}
     except Exception as e:
         return False, str(e)
 
