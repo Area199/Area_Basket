@@ -410,9 +410,38 @@ def pagina_sessione(atleti, logo_b64=""):
         return
 
     c1, c2, _ = st.columns([1, 1, 2])
-    data_test = c1.date_input("Data", date.today(), format="DD/MM/YYYY")
-    sessione = c2.selectbox("Sessione", ["T0", "T1", "T2", "T3"],
+    sessione = c1.selectbox("Sessione", ["T0", "T1", "T2", "T3"],
         help="T0 baseline · T1 fine pre-season · T2 e oltre in season")
+
+    # La data proposta e' quella in cui la sessione e' gia' stata registrata.
+    # Senza questo accorgimento il campo si imposta su oggi, e chi completa i
+    # test in giorni diversi crea senza accorgersene piu' sessioni separate:
+    # le misure salvate in un altro giorno spariscono dalle griglie.
+    _tutti = db.load_test()
+    _date_sess = []
+    if not _tutti.empty:
+        _sel = _tutti[(_tutti["sessione"] == sessione)
+                      & (_tutti["atleta_id"].isin(atleti["id"]))]
+        _date_sess = sorted(_sel["data_test"].dropna().dt.date.unique())
+    data_test = c2.date_input("Data", _date_sess[-1] if _date_sess else date.today(),
+                              format="DD/MM/YYYY", key=f"data_sessione_{sessione}")
+
+    if _date_sess:
+        _elenco = ", ".join(d.strftime("%d/%m/%Y") for d in _date_sess)
+        if len(_date_sess) > 1:
+            st.warning(f"**La sessione {sessione} risulta divisa su più date: "
+                       f"{_elenco}.** Ogni data è una sessione separata, e il "
+                       f"confronto col retest ne userà una sola. Per completarla, "
+                       f"inserisci le misure mancanti sempre nella stessa data.")
+        elif data_test not in _date_sess:
+            st.warning(f"Esiste già una sessione {sessione} registrata il "
+                       f"**{_elenco}**. Con la data selezionata ne crei una seconda, "
+                       f"separata. Se stai completando la stessa sessione, "
+                       f"rimetti quella data.")
+        else:
+            st.info(f"Stai completando la sessione {sessione} del "
+                    f"{data_test.strftime('%d/%m/%Y')}: le misure già salvate "
+                    f"compaiono nelle griglie.")
 
     # ---- SELEZIONE ATLETI ----
     st.markdown("**Atleti convocati**")
@@ -476,6 +505,25 @@ def pagina_sessione(atleti, logo_b64=""):
         v = r.iloc[0].get(col)
         return None if pd.isna(v) else v
 
+    if not _tutti.empty:
+        _ric = _tutti[(_tutti["sessione"] == sessione)
+                      & (_tutti["atleta_id"].isin(convocati["id"]))]
+        if not _ric.empty:
+            with st.expander(f"Cosa risulta già salvato per {sessione}",
+                             expanded=len(_date_sess) > 1):
+                _righe = []
+                for _d, _g in _ric.groupby(_ric["data_test"].dt.date):
+                    _r = {"Data": _d.strftime("%d/%m/%Y")}
+                    for _c in db.ORDINE_TEST:
+                        _r[db.META_TEST[_c]["sigla"]] = int(_g[_c].notna().sum()) \
+                            if _c in _g.columns else 0
+                    _righe.append(_r)
+                st.dataframe(pd.DataFrame(_righe), hide_index=True,
+                             use_container_width=True)
+                st.caption("Numero di atleti con il valore salvato, per data e per "
+                           "test. Uno zero significa che quel test non risulta "
+                           "registrato in quella data.")
+
     st.session_state.setdefault("griglie", {})
     nomi = [f"{r['cognome']} {r['nome']}" for _, r in convocati.iterrows()]
     ruoli = [str(r["ruolo"])[:3].upper() for _, r in convocati.iterrows()]
@@ -488,19 +536,29 @@ def pagina_sessione(atleti, logo_b64=""):
         if col_test == "ele_salto":
             # Si inserisce l'ALTEZZA DEL TOCCO; il reach compare in sola lettura
             # come promemoria e la sottrazione la fa il sistema al salvataggio.
+            def _tocco_salvato(r):
+                t = gia_salvato(r["id"], "ele_tocco")
+                if t is not None:
+                    return t
+                e = gia_salvato(r["id"], "ele_salto")
+                return (e + float(r["reach"])) if (e is not None
+                        and pd.notna(r.get("reach"))) else None
             base = pd.DataFrame({
                 "Atleta": nomi, "Ruolo": ruoli,
-                "Reach (cm)": [int(r["reach"]) if pd.notna(r.get("reach")) else None
-                               for _, r in convocati.iterrows()],
-                "Tocco (cm)": [None] * len(convocati)})
+                "Reach anagrafica": [int(r["reach"]) if pd.notna(r.get("reach"))
+                                     else None for _, r in convocati.iterrows()],
+                "Tocco (cm)": [_tocco_salvato(r) for _, r in convocati.iterrows()]})
             cfg = {"Atleta": st.column_config.TextColumn(disabled=True, width="medium"),
                    "Ruolo": st.column_config.TextColumn(disabled=True, width="small"),
-                   "Reach (cm)": st.column_config.NumberColumn(
+                   "Reach anagrafica": st.column_config.NumberColumn(
                        disabled=True, format="%d", width="small",
-                       help="Dall'anagrafica. Il sistema lo sottrae da solo."),
+                       help="Non è un risultato del test: è il reach inserito in "
+                            "anagrafica. Il sistema lo sottrae dal tocco."),
                    "Tocco (cm)": st.column_config.NumberColumn(
-                       format="%.1f", min_value=150.0, max_value=400.0, step=0.5,
+                       format="%.1f", min_value=0.0, max_value=500.0, step=0.5,
                        help="Altezza massima toccata al muro. NON la differenza.")}
+            st.caption("La colonna grigia è il reach dell'anagrafica, non un dato "
+                       "del test: si compila solo il tocco.")
             senza_reach = [n for n, (_, r) in zip(nomi, convocati.iterrows())
                            if pd.isna(r.get("reach"))]
             if senza_reach:
@@ -508,10 +566,15 @@ def pagina_sessione(atleti, logo_b64=""):
                            "calcolabile per: " + ", ".join(senza_reach)
                            + ". Inseriscilo nella sezione Rosa.")
         elif col_test in ("asi_monopodalico", "mob_kneewall"):
+            _dx, _sx = (("asi_dx", "asi_sx") if col_test == "asi_monopodalico"
+                        else ("mob_dx", "mob_sx"))
             base = pd.DataFrame({"Atleta": nomi, "Ruolo": ruoli,
-                                 "Destra (cm)": [None] * len(convocati),
-                                 "Sinistra (cm)": [None] * len(convocati)})
-            lim = (50, 350) if col_test == "asi_monopodalico" else (0, 20)
+                "Destra (cm)": [gia_salvato(r["id"], _dx) for _, r in convocati.iterrows()],
+                "Sinistra (cm)": [gia_salvato(r["id"], _sx) for _, r in convocati.iterrows()]})
+            # Limiti larghi di proposito: un valore rifiutato dalla cella sparisce
+            # senza avviso. La plausibilita' si controlla al salvataggio, con
+            # un messaggio che dice quale atleta e perche'.
+            lim = (0, 500) if col_test == "asi_monopodalico" else (0, 30)
             fmt = "%.0f" if col_test == "asi_monopodalico" else "%.1f"
             cfg = {"Atleta": st.column_config.TextColumn(disabled=True, width="medium"),
                    "Ruolo": st.column_config.TextColumn(disabled=True, width="small"),
@@ -527,7 +590,7 @@ def pagina_sessione(atleti, logo_b64=""):
             cfg = {"Atleta": st.column_config.TextColumn(disabled=True, width="medium"),
                    "Ruolo": st.column_config.TextColumn(disabled=True, width="small"),
                    f"Risultato ({m['unita']})": st.column_config.NumberColumn(
-                       format=fmt, min_value=m["min"], max_value=m["max"],
+                       format=fmt, min_value=0, max_value=m["max"] * 3,
                        step=m["step"], help="Si inserisce la prova migliore.")}
 
         st.session_state["griglie"][col_test] = st.data_editor(
@@ -542,39 +605,88 @@ def pagina_sessione(atleti, logo_b64=""):
 
 
 def salva_sessione(atleti, test_scelti, data_test, sessione):
-    ok, errori, vuoti = 0, [], 0
+    """
+    Salva le griglie della sessione.
+
+    Principio: nessun salvataggio silenzioso. Per ogni test dice quanti atleti
+    sono stati registrati, e ogni riga scartata compare con il nome e il
+    motivo. Un dato incompleto scartato senza avviso e' peggio di un errore.
+
+    Accanto ai valori calcolati si conservano le misure grezze — tocco,
+    destra, sinistra — che sono il dato primario.
+    """
+    ok, errori, avvisi, vuoti = 0, [], [], 0
+    per_test = {c: 0 for c in test_scelti}
     barra = st.progress(0.0, "Salvataggio in corso...")
 
+    def num(x):
+        try:
+            v = float(x)
+        except (TypeError, ValueError):
+            return None
+        return None if pd.isna(v) else v
+
     for i, (_, a) in enumerate(atleti.iterrows()):
-        misure = {}
+        misure, conta = {}, []
+        nome = f"{a['cognome']} {a['nome']}"
+
         for col_test in test_scelti:
             griglia = st.session_state["griglie"].get(col_test)
             if griglia is None or i >= len(griglia):
                 continue
             riga = griglia.iloc[i]
+            meta = db.META_TEST[col_test]
+            sigla = meta["sigla"]
 
             if col_test == "ele_salto":
-                salto, err = db.calcola_elevazione(riga["Tocco (cm)"],
-                                                   a.get("reach"))
-                if salto is not None:
-                    misure["ele_salto"] = salto
-                elif err:
-                    errori.append(f"{a['cognome']} (elevazione): {err}")
-            elif col_test == "asi_monopodalico":
-                asi = db.calcola_asimmetria(riga["Destra (cm)"], riga["Sinistra (cm)"])
-                if asi is not None:
-                    misure["asi_monopodalico"] = asi
-            elif col_test == "mob_kneewall":
-                peggiore, diff = db.calcola_mobilita(riga["Destra (cm)"],
-                                                     riga["Sinistra (cm)"])
-                if peggiore is not None:
-                    misure["mob_kneewall"] = peggiore
-                    misure["mob_diff"] = diff
+                tocco = num(riga["Tocco (cm)"])
+                if tocco is None:
+                    continue
+                salto, err = db.calcola_elevazione(tocco, a.get("reach"))
+                if salto is None:
+                    errori.append(f"{nome} — {sigla}: {err}")
+                    continue
+                misure["ele_salto"] = salto
+                misure["ele_tocco"] = round(tocco, 1)
+                conta.append(col_test)
+
+            elif col_test in ("asi_monopodalico", "mob_kneewall"):
+                dx, sx = num(riga["Destra (cm)"]), num(riga["Sinistra (cm)"])
+                if dx is None and sx is None:
+                    continue
+                if dx is None or sx is None:
+                    avvisi.append(f"{nome} — {sigla}: inserito un solo lato. "
+                                  "Non salvato: servono destra e sinistra.")
+                    continue
+                if col_test == "asi_monopodalico":
+                    if not (30 <= dx <= 400 and 30 <= sx <= 400):
+                        errori.append(f"{nome} — {sigla}: {dx:.0f} / {sx:.0f} cm "
+                                      "fuori scala. Verificare le misure.")
+                        continue
+                    misure["asi_monopodalico"] = db.calcola_asimmetria(dx, sx)
+                    misure["asi_dx"], misure["asi_sx"] = round(dx, 1), round(sx, 1)
+                else:
+                    if not (0 <= dx <= 25 and 0 <= sx <= 25):
+                        errori.append(f"{nome} — {sigla}: {dx:.1f} / {sx:.1f} cm "
+                                      "fuori scala. Verificare le misure.")
+                        continue
+                    peggiore, diff = db.calcola_mobilita(dx, sx)
+                    misure["mob_kneewall"], misure["mob_diff"] = peggiore, diff
+                    misure["mob_dx"], misure["mob_sx"] = round(dx, 1), round(sx, 1)
+                conta.append(col_test)
+
             else:
-                v = riga[f"Risultato ({db.META_TEST[col_test]['unita']})"]
-                if v is not None and not pd.isna(v):
-                    misure[col_test] = (int(v) if db.META_TEST[col_test]["decimali"] == 0
-                                        else float(v))
+                v = num(riga[f"Risultato ({meta['unita']})"])
+                if v is None:
+                    continue
+                if not (meta["min"] <= v <= meta["max"]):
+                    errori.append(f"{nome} — {sigla}: {v:g} {meta['unita']} fuori "
+                                  f"dall'intervallo plausibile ({meta['min']:g}-"
+                                  f"{meta['max']:g}). Verificare.")
+                    continue
+                misure[col_test] = (int(round(v)) if meta["decimali"] == 0
+                                    else round(v, meta["decimali"]))
+                conta.append(col_test)
 
         if not misure:
             vuoti += 1
@@ -588,21 +700,28 @@ def salva_sessione(atleti, test_scelti, data_test, sessione):
                   "altezza": int(a["altezza"]) if pd.notna(a.get("altezza")) else None})
         if esito:
             ok += 1
+            for c in conta:
+                per_test[c] += 1
         else:
-            errori.append(f"{a['cognome']}: {msg}")
+            errori.append(f"{nome}: salvataggio non riuscito — {msg}")
         barra.progress((i + 1) / len(atleti))
 
     barra.empty()
     db.invalidate_cache()
 
     if ok:
-        st.success(f"Salvati {ok} atleti."
-                   + (f" {vuoti} righe vuote ignorate." if vuoti else ""))
-        st.caption("I test salvati in precedenza per questa stessa sessione "
-                   "non sono stati toccati.")
+        dettaglio = " · ".join(f"{db.META_TEST[c]['sigla']} {per_test[c]}"
+                               for c in test_scelti)
+        st.success(f"Salvati {ok} atleti nella sessione {sessione} del "
+                   f"{data_test.strftime('%d/%m/%Y')}.\n\n"
+                   f"**Atleti salvati per test:** {dettaglio}")
+        st.caption("Le misure salvate in precedenza per questa sessione non sono "
+                   "state toccate.")
+    if avvisi:
+        st.warning("**Righe non salvate:**\n" + "\n".join(f"- {x}" for x in avvisi))
     if errori:
-        st.error("Errori:\n" + "\n".join(f"- {e}" for e in errori))
-    if not ok and not errori:
+        st.error("**Da verificare:**\n" + "\n".join(f"- {x}" for x in errori))
+    if not ok and not errori and not avvisi:
         st.warning("Nessun dato da salvare: le griglie sono vuote.")
 
 
