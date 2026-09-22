@@ -234,6 +234,10 @@ ORDINE_TEST = ["mob_kneewall", "ele_salto", "acc_10m", "agi_lane",
 # ricostruzione del LCA (Limb Symmetry Index >= 90%). NON e' un valore
 # predittivo validato su atleti sani: fino a un quarto degli atleti sani non
 # lo raggiunge. Va trattato come innesco di approfondimento, non come diagnosi.
+# Misure rilevate sul campo, conservate accanto ai valori calcolati.
+# Sono il dato primario: i derivati si ricostruiscono da queste, non viceversa.
+MISURE_GREZZE = ["ele_tocco", "asi_dx", "asi_sx", "mob_dx", "mob_sx"]
+
 SOGLIA_ASIMMETRIA = 10.0
 
 # DIFFERENZA CAVIGLIE 2.0 cm: nei soggetti sani le asimmetrie al knee-to-wall
@@ -740,8 +744,9 @@ def load_test(atleta_id: str | None = None) -> pd.DataFrame:
             "id", "atleta_id", "data_test", "sessione", "eta", "peso", "altezza",
             "mob_kneewall", "mob_diff", "ele_salto", "acc_10m", "agi_lane",
             "res_navetta", "for_piegamenti", "asi_monopodalico", "note",
-            "ai_comment"])
-    for c in list(ASSI.values()) + ["asi_monopodalico", "mob_diff", "peso"]:
+            "ai_comment"] + MISURE_GREZZE)
+    for c in list(ASSI.values()) + ["asi_monopodalico", "mob_diff", "peso"] \
+            + MISURE_GREZZE:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
     if "data_test" in df.columns:
