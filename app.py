@@ -413,35 +413,27 @@ def pagina_sessione(atleti, logo_b64=""):
     sessione = c1.selectbox("Sessione", ["T0", "T1", "T2", "T3"],
         help="T0 baseline · T1 fine pre-season · T2 e oltre in season")
 
-    # La data proposta e' quella in cui la sessione e' gia' stata registrata.
-    # Senza questo accorgimento il campo si imposta su oggi, e chi completa i
-    # test in giorni diversi crea senza accorgersene piu' sessioni separate:
-    # le misure salvate in un altro giorno spariscono dalle griglie.
+    # La sessione e' la T di una stagione, non un giorno. La data qui sotto e'
+    # il GIORNO DI MISURAZIONE: i test di una stessa T possono essere fatti in
+    # giorni diversi e confluiscono tutti nella stessa sessione. Ogni test
+    # conserva il proprio giorno, che servira' per misurare il retest alla
+    # stessa distanza dal proprio T0.
+    data_test = c2.date_input("Giorno di misurazione", date.today(),
+                              format="DD/MM/YYYY", key=f"data_misura_{sessione}",
+                              help="Il giorno in cui state misurando. Non cambia "
+                                   "la sessione: si aggiunge a quella già aperta.")
+    stagione = db.stagione_da_data(data_test)
     _tutti = db.load_test()
-    _date_sess = []
-    if not _tutti.empty:
-        _sel = _tutti[(_tutti["sessione"] == sessione)
-                      & (_tutti["atleta_id"].isin(atleti["id"]))]
-        _date_sess = sorted(_sel["data_test"].dropna().dt.date.unique())
-    data_test = c2.date_input("Data", _date_sess[-1] if _date_sess else date.today(),
-                              format="DD/MM/YYYY", key=f"data_sessione_{sessione}")
+    if not _tutti.empty and "stagione" in _tutti.columns:
+        _tutti = _tutti[(_tutti["sessione"] == sessione)
+                        & (_tutti["stagione"] == stagione)]
+    else:
+        _tutti = _tutti.iloc[0:0]
 
-    if _date_sess:
-        _elenco = ", ".join(d.strftime("%d/%m/%Y") for d in _date_sess)
-        if len(_date_sess) > 1:
-            st.warning(f"**La sessione {sessione} risulta divisa su più date: "
-                       f"{_elenco}.** Ogni data è una sessione separata, e il "
-                       f"confronto col retest ne userà una sola. Per completarla, "
-                       f"inserisci le misure mancanti sempre nella stessa data.")
-        elif data_test not in _date_sess:
-            st.warning(f"Esiste già una sessione {sessione} registrata il "
-                       f"**{_elenco}**. Con la data selezionata ne crei una seconda, "
-                       f"separata. Se stai completando la stessa sessione, "
-                       f"rimetti quella data.")
-        else:
-            st.info(f"Stai completando la sessione {sessione} del "
-                    f"{data_test.strftime('%d/%m/%Y')}: le misure già salvate "
-                    f"compaiono nelle griglie.")
+    _aperta = not _tutti[_tutti["atleta_id"].isin(atleti["id"])].empty
+    st.caption(f"Sessione **{sessione}** · stagione **{stagione}**"
+               + (" · già aperta: le nuove misure si aggiungono a quelle "
+                  "presenti." if _aperta else " · nuova."))
 
     # ---- SELEZIONE ATLETI ----
     st.markdown("**Atleti convocati**")
@@ -491,10 +483,7 @@ def pagina_sessione(atleti, logo_b64=""):
 
     st.divider()
 
-    esistenti = db.load_test()
-    if not esistenti.empty:
-        esistenti = esistenti[(esistenti["data_test"].dt.date == data_test)
-                              & (esistenti["sessione"] == sessione)]
+    esistenti = _tutti
 
     def gia_salvato(aid, col):
         if esistenti.empty:
@@ -505,24 +494,28 @@ def pagina_sessione(atleti, logo_b64=""):
         v = r.iloc[0].get(col)
         return None if pd.isna(v) else v
 
-    if not _tutti.empty:
-        _ric = _tutti[(_tutti["sessione"] == sessione)
-                      & (_tutti["atleta_id"].isin(convocati["id"]))]
-        if not _ric.empty:
-            with st.expander(f"Cosa risulta già salvato per {sessione}",
-                             expanded=len(_date_sess) > 1):
-                _righe = []
-                for _d, _g in _ric.groupby(_ric["data_test"].dt.date):
-                    _r = {"Data": _d.strftime("%d/%m/%Y")}
-                    for _c in db.ORDINE_TEST:
-                        _r[db.META_TEST[_c]["sigla"]] = int(_g[_c].notna().sum()) \
-                            if _c in _g.columns else 0
-                    _righe.append(_r)
-                st.dataframe(pd.DataFrame(_righe), hide_index=True,
-                             use_container_width=True)
-                st.caption("Numero di atleti con il valore salvato, per data e per "
-                           "test. Uno zero significa che quel test non risulta "
-                           "registrato in quella data.")
+    _ric = _tutti[_tutti["atleta_id"].isin(convocati["id"])] \
+        if not _tutti.empty else _tutti
+    if not _ric.empty:
+        with st.expander(f"Cosa risulta già salvato per {sessione} — stagione "
+                         f"{stagione}"):
+            _righe = []
+            for _c in db.ORDINE_TEST:
+                _presenti = _ric[_ric[_c].notna()] if _c in _ric.columns \
+                    else _ric.iloc[0:0]
+                _giorni = set()
+                for _dm in _presenti.get("date_misure", pd.Series(dtype=object)):
+                    if isinstance(_dm, dict) and _dm.get(_c):
+                        _giorni.add(str(_dm[_c])[:10])
+                _righe.append({
+                    "Test": f"{db.META_TEST[_c]['sigla']} — {db.META_TEST[_c]['label']}",
+                    "Atleti misurati": f"{len(_presenti)} su {len(convocati)}",
+                    "Giorni": ", ".join(pd.to_datetime(g).strftime("%d/%m")
+                                        for g in sorted(_giorni)) or "—"})
+            st.dataframe(pd.DataFrame(_righe), hide_index=True,
+                         use_container_width=True)
+            st.caption("I test di una stessa sessione possono essere misurati in "
+                       "giorni diversi: ognuno conserva il proprio giorno.")
 
     st.session_state.setdefault("griglie", {})
     nomi = [f"{r['cognome']} {r['nome']}" for _, r in convocati.iterrows()]
@@ -595,16 +588,18 @@ def pagina_sessione(atleti, logo_b64=""):
 
         st.session_state["griglie"][col_test] = st.data_editor(
             base, use_container_width=True, hide_index=True, num_rows="fixed",
-            key=f"ed_{col_test}_{data_test}_{sessione}_{len(convocati)}",
+            key=f"ed_{col_test}_{stagione}_{sessione}_{len(convocati)}",
             column_config=cfg)
         st.write("")
 
     st.divider()
     if st.button("💾 Salva la sessione", type="primary", use_container_width=True):
-        salva_sessione(convocati, ordinati, data_test, sessione)
+        salva_sessione(convocati, ordinati, data_test, sessione,
+                       {r["atleta_id"]: r for _, r in esistenti.iterrows()}
+                       if not esistenti.empty else {})
 
 
-def salva_sessione(atleti, test_scelti, data_test, sessione):
+def salva_sessione(atleti, test_scelti, data_test, sessione, esistenti=None):
     """
     Salva le griglie della sessione.
 
@@ -615,7 +610,8 @@ def salva_sessione(atleti, test_scelti, data_test, sessione):
     Accanto ai valori calcolati si conservano le misure grezze — tocco,
     destra, sinistra — che sono il dato primario.
     """
-    ok, errori, avvisi, vuoti = 0, [], [], 0
+    esistenti = esistenti or {}
+    ok, errori, avvisi, vuoti, sostituzioni = 0, [], [], 0, []
     per_test = {c: 0 for c in test_scelti}
     barra = st.progress(0.0, "Salvataggio in corso...")
 
@@ -625,6 +621,18 @@ def salva_sessione(atleti, test_scelti, data_test, sessione):
         except (TypeError, ValueError):
             return None
         return None if pd.isna(v) else v
+
+    def gia(aid, col):
+        """Valore gia' salvato in questa sessione, oppure None."""
+        r = esistenti.get(aid)
+        return None if r is None else num(r.get(col))
+
+    def uguale(x, y):
+        return x is not None and y is not None and abs(x - y) < 1e-6
+
+    # Le griglie sono ripopolate con i valori gia' salvati. Un valore rimasto
+    # identico NON va risalvato: gli verrebbe assegnato il giorno di oggi al
+    # posto di quello in cui e' stato davvero misurato.
 
     for i, (_, a) in enumerate(atleti.iterrows()):
         misure, conta = {}, []
@@ -642,6 +650,12 @@ def salva_sessione(atleti, test_scelti, data_test, sessione):
                 tocco = num(riga["Tocco (cm)"])
                 if tocco is None:
                     continue
+                _t_prec = gia(a["id"], "ele_tocco")
+                if _t_prec is None and gia(a["id"], "ele_salto") is not None \
+                        and pd.notna(a.get("reach")):
+                    _t_prec = gia(a["id"], "ele_salto") + float(a["reach"])
+                if uguale(tocco, _t_prec):
+                    continue
                 salto, err = db.calcola_elevazione(tocco, a.get("reach"))
                 if salto is None:
                     errori.append(f"{nome} — {sigla}: {err}")
@@ -653,6 +667,10 @@ def salva_sessione(atleti, test_scelti, data_test, sessione):
             elif col_test in ("asi_monopodalico", "mob_kneewall"):
                 dx, sx = num(riga["Destra (cm)"]), num(riga["Sinistra (cm)"])
                 if dx is None and sx is None:
+                    continue
+                _gd, _gs = (("asi_dx", "asi_sx") if col_test == "asi_monopodalico"
+                            else ("mob_dx", "mob_sx"))
+                if uguale(dx, gia(a["id"], _gd)) and uguale(sx, gia(a["id"], _gs)):
                     continue
                 if dx is None or sx is None:
                     avvisi.append(f"{nome} — {sigla}: inserito un solo lato. "
@@ -677,7 +695,7 @@ def salva_sessione(atleti, test_scelti, data_test, sessione):
 
             else:
                 v = num(riga[f"Risultato ({meta['unita']})"])
-                if v is None:
+                if v is None or uguale(v, gia(a["id"], col_test)):
                     continue
                 if not (meta["min"] <= v <= meta["max"]):
                     errori.append(f"{nome} — {sigla}: {v:g} {meta['unita']} fuori "
@@ -702,6 +720,10 @@ def salva_sessione(atleti, test_scelti, data_test, sessione):
             ok += 1
             for c in conta:
                 per_test[c] += 1
+            _sost = msg.get("sostituiti", []) if isinstance(msg, dict) else []
+            if _sost:
+                sostituzioni.append(f"{nome}: " + ", ".join(
+                    db.META_TEST[c]["sigla"] for c in _sost))
         else:
             errori.append(f"{nome}: salvataggio non riuscito — {msg}")
         barra.progress((i + 1) / len(atleti))
@@ -712,17 +734,24 @@ def salva_sessione(atleti, test_scelti, data_test, sessione):
     if ok:
         dettaglio = " · ".join(f"{db.META_TEST[c]['sigla']} {per_test[c]}"
                                for c in test_scelti)
-        st.success(f"Salvati {ok} atleti nella sessione {sessione} del "
+        st.success(f"Aggiornat{'o' if ok == 1 else 'i'} {ok} "
+                   f"atlet{'a' if ok == 1 else 'i'} nella sessione {sessione} "
+                   f"(stagione {db.stagione_da_data(data_test)}), misure del "
                    f"{data_test.strftime('%d/%m/%Y')}.\n\n"
-                   f"**Atleti salvati per test:** {dettaglio}")
+                   f"**Atleti registrati per test:** {dettaglio}")
         st.caption("Le misure salvate in precedenza per questa sessione non sono "
                    "state toccate.")
     if avvisi:
         st.warning("**Righe non salvate:**\n" + "\n".join(f"- {x}" for x in avvisi))
     if errori:
         st.error("**Da verificare:**\n" + "\n".join(f"- {x}" for x in errori))
+    if sostituzioni:
+        st.info("**Valori sostituiti** — il test risultava già misurato in questa "
+                "sessione e il nuovo valore ha preso il posto del precedente:\n"
+                + "\n".join(f"- {x}" for x in sostituzioni))
     if not ok and not errori and not avvisi:
-        st.warning("Nessun dato da salvare: le griglie sono vuote.")
+        st.info("Nessuna novità da salvare: i valori nelle griglie coincidono con "
+                "quelli già registrati.")
 
 
 # ==============================================================================
