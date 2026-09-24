@@ -30,9 +30,16 @@ TESTO = "#E8E8EE"
 TESTO_2 = "#B4B4C0"
 TESTO_3 = "#9A9AA6"
 
+# Attrezzatura dichiarabile dal direttore tecnico. Corpo libero, muro, campo,
+# cinesini e cronometro sono sempre considerati disponibili e non compaiono qui.
+# Un esercizio entra nel programma solo se TUTTA la sua attrezzatura rientra
+# fra quella dichiarata: e' cio' che rende impossibile prescrivere attrezzi
+# che la squadra non ha.
 ATTREZZI = {
     "elastico": "Elastici (loop band e therabend)",
     "palla_medica": "Palle mediche",
+    "ostacoli": "Ostacoli bassi o cerchi",
+    "pallina": "Palline da tennis",
     "tappetino": "Tappetini",
     "panca": "Panca o rialzo",
 }
