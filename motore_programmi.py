@@ -113,7 +113,8 @@ def load_esercizi() -> pd.DataFrame:
             "id", "codice", "nome", "asse_primario", "assi_secondari",
             "categoria", "attrezzatura", "livello", "serie_default",
             "rip_default", "recupero_sec", "durata_stimata_sec",
-            "setup", "esecuzione", "focus", "errori_comuni"])
+            "setup", "esecuzione", "focus", "errori_comuni",
+            "controindicazioni"])
     for c in ["livello", "serie_default", "recupero_sec", "durata_stimata_sec"]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
@@ -566,7 +567,8 @@ def load_dettaglio(programma_id: int) -> dict:
     if not sedute.empty and not es.empty:
         sedute = sedute.merge(
             es[["id", "codice", "nome", "categoria", "setup", "esecuzione",
-                "focus", "errori_comuni", "asse_primario", "unilaterale"]],
+                "focus", "errori_comuni", "controindicazioni",
+                "asse_primario", "unilaterale"]],
             left_on="esercizio_id", right_on="id", how="left",
             suffixes=("", "_es"))
         sedute = sedute.sort_values(["settimana", "seduta", "blocco", "ordine"])
