@@ -447,11 +447,18 @@ def _sedute_gruppo(esercizi, gruppo, settimane, sedute_settimana,
                         (esercizi["asse_primario"].isin(focus))
                         & (esercizi["categoria"].isin(categorie))]
                     if con_palla:
-                        conp = pool[pool["con_palla"] == True]  # noqa: E712
-                        if not conp.empty:
-                            usati.add(conp.iloc[0]["codice"])
+                        # Prendere iloc[0] faceva uscire sempre lo stesso
+                        # esercizio con la palla — quello con il codice piu'
+                        # basso — in tutte le sedute di tutte le settimane, e
+                        # non controllava il livello massimo consentito. Con
+                        # _scegli valgono le stesse regole del resto della
+                        # seduta: livello della settimana e nessuna ripetizione.
+                        conp = _scegli(pool[pool["con_palla"] == True],  # noqa: E712
+                                       1, rnd, usati, livello_max)
+                        if conp:
+                            usati.add(conp[0]["codice"])
                             righe.append(_riga(pid, gid, sett, sed, blocco, 1,
-                                               conp.iloc[0], carico))
+                                               conp[0], carico))
                             n_es -= 1
                 else:
                     pool = esercizi[esercizi["categoria"].isin(categorie)]
