@@ -36,12 +36,14 @@ TESTO_3 = "#9A9AA6"
 # fra quella dichiarata: e' cio' che rende impossibile prescrivere attrezzi
 # che la squadra non ha.
 ATTREZZI = {
-    "elastico": "Elastici (loop band e therabend)",
+    "elastico": "Elastici da ancorare (tubo o therabend, non ad anello)",
+    "elastico_loop": "Elastici ad anello chiuso (loop band)",
     "palla_medica": "Palle mediche",
+    "manubri": "Manubri (anche di carico ridotto)",
     "ostacoli": "Ostacoli bassi o cerchi",
+    "scaletta": "Scaletta per la rapidita'",
     "pallina": "Palline da tennis",
-    "tappetino": "Tappetini",
-    "panca": "Panca o rialzo",
+    "panca": "Panca o rialzo stabile",
 }
 
 
@@ -129,10 +131,13 @@ def _genera(atleti, norme, targets, coach_id):
 
     st.markdown("**Attrezzatura disponibile**")
     st.caption("Corpo libero, muro, campo, cinesini e cronometro sono sempre "
-               "considerati disponibili.")
-    scelte, cols = [], st.columns(4)
+               "considerati disponibili. I due tipi di elastico non sono "
+               "intercambiabili: il lavoro sui glutei medi — scivolamenti "
+               "resistiti, camminata laterale — si fa solo con l'anello chiuso. "
+               "Spuntare solo ciò che la squadra ha davvero in mano oggi.")
+    scelte, cols = [], st.columns(3)
     for i, (chiave, etichetta) in enumerate(ATTREZZI.items()):
-        if cols[i % 4].checkbox(etichetta, value=(chiave == "elastico"),
+        if cols[i % 3].checkbox(etichetta, value=(chiave == "elastico"),
                                 key=f"attr_{chiave}"):
             scelte.append(chiave)
 
@@ -425,6 +430,17 @@ def _mostra_dettaglio(prog, dett, atleti, logo_b64, revisione=False):
             st.caption(f"Test da svolgere: {nomi_test}" if not piano.empty else "")
 
 
+def _testo(e, campo: str) -> str:
+    """Restituisce il campo solo se contiene davvero del testo.
+
+    I campi facoltativi della libreria arrivano dalla merge come NaN quando
+    sono NULL nel database, e NaN e' truthy: un semplice 'if e.get(campo)'
+    stamperebbe la stringa 'nan' in scheda.
+    """
+    v = e.get(campo)
+    return v.strip() if isinstance(v, str) and v.strip() else ""
+
+
 def _riga_esercizio(e):
     unil = " · per lato" if e.get("unilaterale") else ""
     st.markdown(
@@ -446,4 +462,14 @@ def _riga_esercizio(e):
         + (f'<div style="color:#D08A8A;font-size:11px;margin-top:4px">'
            f'Errore comune: {e.get("errori_comuni")}</div>'
            if e.get("errori_comuni") else "")
+        # Le controindicazioni sono la condizione che deve essere vera perche'
+        # l'esercizio sia sicuro: senza di esse in scheda il vincolo resta
+        # scritto solo nel database e il coach non lo vede mai. Il campo e'
+        # vuoto per la maggior parte degli esercizi e arriva dalla merge come
+        # NaN, che e' truthy: va controllato il tipo, non la verita'.
+        + (f'<div style="background:rgba(224,49,49,0.12);'
+           f'border-left:3px solid {ROSSO};color:#FFB0B0;font-size:11px;'
+           f'margin-top:7px;padding:7px 10px;line-height:1.5">'
+           f'<b>Prima di assegnarlo.</b> {_testo(e, "controindicazioni")}</div>'
+           if _testo(e, "controindicazioni") else "")
         + '</div>', unsafe_allow_html=True)
