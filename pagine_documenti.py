@@ -24,10 +24,22 @@ FORMATO DEL TESTO
 Nessuna libreria esterna: il convertitore e' interno al modulo, cosi'
 requirements.txt non cambia.
 
-Versione 1.0 — Settembre 2026
+ALLEGATI PDF
+------------
+Un documento puo' anche essere un PDF gia' impaginato altrove, consegnato al
+coach esattamente com'e'. Il file vive in base64 dentro la riga, come gia'
+accade per il logo della societa'.
+
+Il peso e' il punto delicato. La colonna file_b64 non va MAI letta negli
+elenchi, altrimenti ogni apertura di pagina scarica tutti gli allegati della
+squadra: load_documenti elenca le colonne una per una e il file si legge solo
+al momento di aprirlo o scaricarlo, con carica_pdf.
+
+Versione 1.1 — Settembre 2026
 ================================================================================
 """
 
+import base64
 import html as _html
 import re
 from datetime import datetime
@@ -46,6 +58,16 @@ TESTO = "#E8E8EE"
 TESTO_2 = "#B4B4C0"
 
 STATI_DOC = {"bozza": "Bozza", "pubblicato": "Pubblicato", "archiviato": "Archiviato"}
+
+# Oltre questo peso l'allegato viene rifiutato. Il base64 gonfia il file di
+# circa un terzo e la riga deve restare maneggevole: 4 MB sono abbondanti per
+# un documento di testo e restano scaricabili da telefono con rete lenta.
+MAX_PDF_MB = 4
+
+# Colonne dell'elenco. file_b64 e' deliberatamente esclusa: e' l'unica riga di
+# codice che impedisce di scaricare tutti gli allegati a ogni apertura.
+COLONNE_ELENCO = ("id,coach_id,titolo,contenuto,stato,tipo,file_nome,"
+                  "file_byte,creato_il,aggiornato_il,pubblicato_il")
 
 GUIDA_FORMATO = """**Come si scrive il testo**
 
@@ -262,10 +284,57 @@ Documento riservato alla squadra indicata</div>
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_documenti(coach_id, solo_pubblicati: bool = False) -> pd.DataFrame:
-    q = db.get_client().table("documenti_coach").select("*").eq("coach_id", coach_id)
+    q = (db.get_client().table("documenti_coach").select(COLONNE_ELENCO)
+         .eq("coach_id", coach_id))
     if solo_pubblicati:
         q = q.eq("stato", "pubblicato")
-    return pd.DataFrame(q.order("aggiornato_il", desc=True).execute().data or [])
+    df = pd.DataFrame(q.order("aggiornato_il", desc=True).execute().data or [])
+    if not df.empty and "tipo" not in df.columns:
+        df["tipo"] = "testo"      # database non ancora migrato alla 014
+    return df
+
+
+def carica_pdf(doc_id) -> bytes | None:
+    """Scarica l'allegato di UN documento. Fuori di qui il file non si legge."""
+    try:
+        r = (db.get_client().table("documenti_coach").select("file_b64")
+             .eq("id", int(doc_id)).limit(1).execute().data or [])
+        if not r or not r[0].get("file_b64"):
+            return None
+        return base64.b64decode(r[0]["file_b64"])
+    except Exception:
+        return None
+
+
+def salva_pdf(coach_id, titolo, contenuto_file: bytes, nome_file: str,
+              stato="bozza"):
+    limite = MAX_PDF_MB * 1024 * 1024
+    if len(contenuto_file) > limite:
+        return False, (f"Il file pesa {len(contenuto_file)/1024/1024:.1f} MB e il "
+                       f"limite e' {MAX_PDF_MB} MB. Comprimilo o dividilo in due.")
+    if not contenuto_file.startswith(b"%PDF"):
+        return False, "Il file non sembra un PDF valido."
+    try:
+        ora = datetime.utcnow().isoformat()
+        campi = {"coach_id": coach_id, "titolo": titolo.strip(), "tipo": "pdf",
+                 "file_b64": base64.b64encode(contenuto_file).decode("ascii"),
+                 "file_nome": nome_file, "file_byte": len(contenuto_file),
+                 "stato": stato, "aggiornato_il": ora}
+        if stato == "pubblicato":
+            campi["pubblicato_il"] = ora
+        db.get_client().table("documenti_coach").insert(campi).execute()
+        load_documenti.clear()
+        return True, "Allegato salvato."
+    except Exception as e:
+        return False, str(e)
+
+
+def _peso(byte) -> str:
+    try:
+        b = float(byte)
+    except (TypeError, ValueError):
+        return ""
+    return f"{b/1024:.0f} KB" if b < 1024 * 1024 else f"{b/1024/1024:.1f} MB"
 
 
 def salva_documento(coach_id, titolo, contenuto, stato="bozza", doc_id=None):
@@ -309,9 +378,9 @@ def elimina_documento(doc_id):
         return False
 
 
-def _nome_file(titolo):
+def _nome_file(titolo, estensione="html"):
     base = re.sub(r"[^A-Za-z0-9]+", "_", titolo or "documento").strip("_")[:50]
-    return f"AREA199_{base or 'documento'}.html"
+    return f"AREA199_{base or 'documento'}.{estensione}"
 
 
 # ==============================================================================
@@ -330,7 +399,8 @@ def pagina_documenti_admin(coach_id):
     st.caption(f"Destinatario: **{dati.get('nome', '—')}**"
                + (f" — {dati.get('organizzazione')}" if dati.get("organizzazione") else ""))
 
-    for k, v in [("doc_id", None), ("doc_titolo", ""), ("doc_testo", "")]:
+    for k, v in [("doc_id", None), ("doc_titolo", ""), ("doc_testo", ""),
+                 ("pdf_giro", 0)]:
         st.session_state.setdefault(k, v)
 
     # Streamlit non permette di modificare un campo gia' disegnato nella stessa
@@ -345,7 +415,7 @@ def pagina_documenti_admin(coach_id):
     if flash:
         st.success(flash)
 
-    t1, t2 = st.tabs(["Scrivi", "Documenti inviati"])
+    t1, t_pdf, t2 = st.tabs(["Scrivi", "Allega un PDF", "Documenti inviati"])
 
     with t1:
         if st.session_state["doc_id"]:
@@ -394,6 +464,57 @@ def pagina_documenti_admin(coach_id):
                 else:
                     st.error(msg)
 
+    with t_pdf:
+        st.caption(f"Per materiale gia' impaginato altrove: specifiche, "
+                   f"protocolli, referti, documenti firmati. Il file arriva al "
+                   f"coach esattamente com'e', senza passare dall'impaginazione "
+                   f"AREA199 — quindi l'intestazione deve esserci gia' dentro. "
+                   f"Massimo {MAX_PDF_MB} MB.")
+
+        # Il numero di giro entra nelle chiavi dei campi: dopo un salvataggio
+        # viene incrementato, Streamlit li considera campi nuovi e li disegna
+        # vuoti. Senza questo il file resterebbe caricato e basterebbe un
+        # secondo clic per pubblicare due volte lo stesso allegato.
+        giro = st.session_state["pdf_giro"]
+        titolo_pdf = st.text_input(
+            "Titolo del documento", key=f"pdf_titolo_{giro}",
+            placeholder="Es. Specifica rialzi pliometrici")
+        caricato = st.file_uploader("File PDF", type=["pdf"],
+                                    key=f"pdf_file_{giro}")
+
+        if caricato is not None:
+            byte = caricato.getvalue()
+            st.caption(f"{caricato.name} — {_peso(len(byte))}")
+            if len(byte) > MAX_PDF_MB * 1024 * 1024:
+                st.error(f"Supera il limite di {MAX_PDF_MB} MB.")
+
+        pronto_pdf = bool((titolo_pdf or "").strip() and caricato is not None)
+        p1, p2 = st.columns(2)
+        with p1:
+            if st.button("Salva in bozza", key="pdf_bozza",
+                         disabled=not pronto_pdf, use_container_width=True):
+                ok, msg = salva_pdf(coach_id, titolo_pdf, caricato.getvalue(),
+                                    caricato.name, "bozza")
+                if ok:
+                    st.session_state["doc_flash"] = ("Allegato salvato in bozza. "
+                                                     "Lo trovi in «Documenti inviati».")
+                    st.session_state["pdf_giro"] += 1
+                    st.rerun()
+                else:
+                    st.error(msg)
+        with p2:
+            if st.button("Pubblica al coach", key="pdf_pub", type="primary",
+                         disabled=not pronto_pdf, use_container_width=True):
+                ok, msg = salva_pdf(coach_id, titolo_pdf, caricato.getvalue(),
+                                    caricato.name, "pubblicato")
+                if ok:
+                    st.session_state["doc_flash"] = ("Pubblicato: il coach lo trova "
+                                                     "nella sezione «Documenti».")
+                    st.session_state["pdf_giro"] += 1
+                    st.rerun()
+                else:
+                    st.error(msg)
+
     with t2:
         docs = load_documenti(coach_id)
         if docs.empty:
@@ -403,14 +524,22 @@ def pagina_documenti_admin(coach_id):
             stato = STATI_DOC.get(d["stato"], d["stato"])
             colore = {"pubblicato": VERDE, "bozza": ORO}.get(d["stato"], TESTO_2)
             quando = pd.to_datetime(d["aggiornato_il"]).strftime("%d/%m/%Y %H:%M")
-            with st.expander(f"{d['titolo']} — {stato} — {quando}"):
+            e_pdf = d.get("tipo") == "pdf"
+            segno = "PDF · " if e_pdf else ""
+            with st.expander(f"{segno}{d['titolo']} — {stato} — {quando}"):
                 st.markdown(f'<span style="color:{colore};font-weight:700">'
                             f'{stato.upper()}</span>', unsafe_allow_html=True)
-                html_doc = render_documento(d["titolo"], d["contenuto"], dati,
-                                            d.get("pubblicato_il") or d["aggiornato_il"])
+                if e_pdf:
+                    st.caption(f"Allegato: {d.get('file_nome') or 'documento.pdf'}"
+                               + (f" — {_peso(d.get('file_byte'))}"
+                                  if d.get("file_byte") else ""))
+
                 b1, b2, b3, b4 = st.columns(4)
                 with b1:
-                    if st.button("Modifica", key=f"mod_{d['id']}"):
+                    # Un PDF non si modifica qui dentro: si sostituisce
+                    # caricandone un altro e togliendo il vecchio.
+                    if st.button("Modifica", key=f"mod_{d['id']}",
+                                 disabled=e_pdf):
                         st.session_state["doc_pendente"] = {
                             "id": int(d["id"]), "titolo": d["titolo"],
                             "testo": d["contenuto"]}
@@ -423,9 +552,30 @@ def pagina_documenti_admin(coach_id):
                         if st.button("Pubblica", key=f"pub_{d['id']}"):
                             cambia_stato(d["id"], "pubblicato"); st.rerun()
                 with b3:
-                    st.download_button("Scarica", data=html_doc,
-                                       file_name=_nome_file(d["titolo"]),
-                                       mime="text/html", key=f"dl_{d['id']}")
+                    # Il file si scarica dal database solo se qualcuno preme
+                    # davvero: prima c'e' un pulsante che non pesa niente.
+                    if e_pdf:
+                        if st.session_state.get(f"vuoi_{d['id']}"):
+                            byte = carica_pdf(d["id"])
+                            if byte:
+                                st.download_button(
+                                    "Scarica il PDF", data=byte,
+                                    file_name=d.get("file_nome")
+                                              or _nome_file(d["titolo"], "pdf"),
+                                    mime="application/pdf", key=f"dl_{d['id']}")
+                            else:
+                                st.error("Allegato non recuperabile.")
+                        else:
+                            if st.button("Prepara il file", key=f"prep_{d['id']}"):
+                                st.session_state[f"vuoi_{d['id']}"] = True
+                                st.rerun()
+                    else:
+                        st.download_button(
+                            "Scarica", key=f"dl_{d['id']}", mime="text/html",
+                            file_name=_nome_file(d["titolo"]),
+                            data=render_documento(
+                                d["titolo"], d["contenuto"], dati,
+                                d.get("pubblicato_il") or d["aggiornato_il"]))
                 with b4:
                     if st.button("Elimina", key=f"del_{d['id']}"):
                         elimina_documento(d["id"]); st.rerun()
@@ -449,12 +599,41 @@ def pagina_documenti_coach(coach_id):
         return
 
     dati = db.dati_coach_completi(coach_id) or {}
-    etichette = {
-        f"{r['titolo']} — {pd.to_datetime(r['pubblicato_il'] or r['aggiornato_il']).strftime('%d/%m/%Y')}":
-        i for i, r in docs.iterrows()}
+    etichette = {}
+    for i, r in docs.iterrows():
+        giorno = pd.to_datetime(r["pubblicato_il"] or r["aggiornato_il"]) \
+                   .strftime("%d/%m/%Y")
+        segno = "PDF · " if r.get("tipo") == "pdf" else ""
+        etichette[f"{segno}{r['titolo']} — {giorno}"] = i
     scelta = st.selectbox("Documento", list(etichette.keys()))
     d = docs.loc[etichette[scelta]]
 
+    # ---- allegato PDF ----
+    if d.get("tipo") == "pdf":
+        if d.get("file_byte"):
+            st.caption(f"Documento allegato — {_peso(d.get('file_byte'))}")
+        byte = carica_pdf(d["id"])
+        if byte is None:
+            st.error("Il file non è recuperabile. Segnalalo ad AREA199.")
+            return
+        st.download_button(
+            "Scarica il PDF", data=byte, use_container_width=True,
+            file_name=d.get("file_nome") or _nome_file(d["titolo"], "pdf"),
+            mime="application/pdf")
+        # L'anteprima incorporata non funziona su parecchi telefoni: resta
+        # facoltativa, e il pulsante di scaricamento e' la via che funziona
+        # sempre.
+        if st.checkbox("Mostra l'anteprima qui dentro"):
+            b64 = base64.b64encode(byte).decode("ascii")
+            components.html(
+                f'<embed src="data:application/pdf;base64,{b64}" '
+                f'type="application/pdf" width="100%" height="880px">',
+                height=900)
+            st.caption("Se resta bianca, il telefono non apre i PDF nella "
+                       "pagina: usa il pulsante di scaricamento.")
+        return
+
+    # ---- documento impaginato dall'app ----
     html_doc = render_documento(d["titolo"], d["contenuto"], dati,
                                 d.get("pubblicato_il") or d["aggiornato_il"])
     st.download_button("Scarica e stampa", data=html_doc,
