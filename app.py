@@ -8,6 +8,7 @@ File richiesti nella stessa cartella:
     motore_programmi.py  analisi lacune, gruppi, generazione programmi
     pagine_programmi.py  schermate di programmazione e schede
     pagine_contratto.py  profilo società, contratto, moduli di consenso
+    stampa_test.py       risultati dei test in formato stampabile
 
 Versione 6.0 — Agosto 2026
 Dott. Antonio Petruzzi — Senior Human Performance Specialist
@@ -27,6 +28,7 @@ from pagine_contratto import (pagina_profilo as pagina_profilo_societa,
                               pannello_condizioni, pannello_contratto_admin)
 from pagine_documenti import pagina_documenti_admin, pagina_documenti_coach
 from pagine_presenze import pagina_presenze
+import stampa_test
 
 try:
     import openai
@@ -254,6 +256,16 @@ def render_radar(punteggi, targets, titolo="Profilo vs target di ruolo",
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+def dati_stampa(atleti):
+    """Nome della societa' e logo per i documenti stampabili. Vuoti se gli
+    atleti appartengono a piu' squadre (vista «Tutte le squadre»)."""
+    ids = atleti["coach_id"].dropna().unique() if "coach_id" in atleti.columns else []
+    if len(ids) != 1:
+        return "", ""
+    d = db.dati_coach(int(ids[0]))
+    return d.get("organizzazione", ""), d.get("logo_b64", "")
+
+
 # ==============================================================================
 # LOGIN
 # ==============================================================================
@@ -398,6 +410,29 @@ def pagina_panoramica(atleti, norme, targets, info_slot):
         st.warning(f"{senza} atleti senza sessioni registrate.")
     st.caption("MOB mobilità caviglia · ELE elevazione · ACC accelerazione · "
                "AGI agilità · RES resistenza · FOR forza")
+
+    # --- Risultati stampabili ---
+    sessioni = stampa_test.sessioni_disponibili(test, atleti["id"])
+    if sessioni:
+        with st.expander("🖨️  Scarica i risultati dei test in formato stampabile"):
+            et_s = {f"{s} — stagione {g}": (g, s) for g, s in sessioni}
+            stagione, sessione = et_s[st.selectbox("Sessione", list(et_s.keys()),
+                                                   key="stampa_sessione")]
+            schede = st.checkbox("Aggiungi la scheda di ogni atleta, una per pagina",
+                                 value=True, key="stampa_schede",
+                                 help="Da consegnare ai giocatori: ognuno ha la "
+                                      "sua pagina con misure, punteggi e "
+                                      "segnalazioni.")
+            squadra, logo = dati_stampa(atleti)
+            html_rep = stampa_test.genera_report_squadra(
+                atleti, stampa_test.righe_sessione(test, stagione, sessione),
+                norme, targets, sessione, stagione, squadra, logo, schede)
+            st.download_button(
+                "Scarica i risultati", data=html_rep, mime="text/html",
+                use_container_width=True,
+                file_name=stampa_test.nome_file("risultati", sessione, stagione))
+            st.caption("Si apre nel browser: in alto a destra c'è STAMPA, da lì "
+                       "anche «Salva come PDF».")
 
 
 # ==============================================================================
@@ -832,6 +867,18 @@ def pagina_atleta(atleti, norme, targets):
                               riga.get("asi_monopodalico"), riga.get("mob_diff"))
             with cb:
                 render_radar(p, tgt)
+
+            _stag = riga.get("stagione") if pd.notna(riga.get("stagione")) \
+                else db.stagione_da_data(riga["data_test"])
+            _squadra, _logo = dati_stampa(atleti[atleti["id"] == aid])
+            st.download_button(
+                "🖨️  Scarica la scheda stampabile", use_container_width=True,
+                data=stampa_test.genera_report_atleta(
+                    atleta, riga, norme, targets, riga["sessione"], _stag,
+                    _squadra, _logo, storico=suoi),
+                file_name=stampa_test.nome_file(
+                    "scheda", atleta["cognome"], atleta["nome"], riga["sessione"]),
+                mime="text/html", key=f"stampa_{aid}")
 
             if riga.get("note"):
                 st.markdown(f'<div class="a199-nota"><b>NOTE DI CAMPO</b><br>'
