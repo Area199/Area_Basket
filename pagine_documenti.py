@@ -379,8 +379,20 @@ def elimina_documento(doc_id):
 
 
 def _nome_file(titolo, estensione="html"):
-    base = re.sub(r"[^A-Za-z0-9]+", "_", titolo or "documento").strip("_")[:50]
-    return f"AREA199_{base or 'documento'}.{estensione}"
+    """
+    Nome del file scaricato, dal TITOLO del documento:
+    «Settimana 2 — Seduta 1» -> «AREA199 - Settimana 2 - Seduta 1.pdf».
+
+    Vale anche per gli allegati PDF: prima si scaricavano con il nome del
+    file caricato, cosi' in archivio le sedute non si ritrovavano piu' per
+    settimana e seduta. Si tolgono solo i caratteri che i sistemi operativi
+    non accettano nei nomi dei file; spazi e lettere accentate restano.
+    """
+    t = (titolo or "").replace("—", "-").replace("–", "-")
+    t = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", t)
+    t = re.sub(r"\s*-\s*", " - ", t)
+    t = re.sub(r"\s+", " ", t).strip(" .-")[:80].strip(" .-")
+    return f"AREA199 - {t or 'documento'}.{estensione}"
 
 
 # ==============================================================================
@@ -560,8 +572,7 @@ def pagina_documenti_admin(coach_id):
                             if byte:
                                 st.download_button(
                                     "Scarica il PDF", data=byte,
-                                    file_name=d.get("file_nome")
-                                              or _nome_file(d["titolo"], "pdf"),
+                                    file_name=_nome_file(d["titolo"], "pdf"),
                                     mime="application/pdf", key=f"dl_{d['id']}")
                             else:
                                 st.error("Allegato non recuperabile.")
@@ -618,7 +629,7 @@ def pagina_documenti_coach(coach_id):
             return
         st.download_button(
             "Scarica il PDF", data=byte, use_container_width=True,
-            file_name=d.get("file_nome") or _nome_file(d["titolo"], "pdf"),
+            file_name=_nome_file(d["titolo"], "pdf"),
             mime="application/pdf")
         # L'anteprima incorporata non funziona su parecchi telefoni: resta
         # facoltativa, e il pulsante di scaricamento e' la via che funziona
