@@ -1186,6 +1186,31 @@ def disattiva_atleta(atleta_id: str) -> bool:
         return False
 
 
+def riattiva_atleta(atleta_id: str, coach_id=None) -> tuple[bool, str]:
+    """
+    Riporta in rosa un atleta rimosso. I test non sono mai stati cancellati:
+    tornano visibili appena l'atleta e' di nuovo attivo.
+    Occupa di nuovo uno slot, quindi il limite di licenza vale come per un
+    inserimento (e il trigger del database lo ricontrolla).
+    """
+    try:
+        if coach_id is not None:
+            info = slot_info(coach_id)
+            if info["pieno"]:
+                return False, (f"Licenza esaurita: {info['usati']} slot su "
+                               f"{info['max']} occupati. Per riattivarlo occorre "
+                               "prima liberarne uno.")
+        get_client().table("atleti").update({"attivo": True}) \
+            .eq("id", atleta_id).execute()
+        invalidate_cache()
+        return True, "Atleta riportato in rosa con tutti i suoi test."
+    except Exception as e:
+        msg = str(e)
+        if "Licenza esaurita" in msg or "check_violation" in msg:
+            return False, "Licenza esaurita: nessuno slot disponibile."
+        return False, msg
+
+
 def aggiorna_norma(ruolo: str, test: str, media: float, dev_st: float,
                    categoria: str = CATEGORIA) -> bool:
     try:
