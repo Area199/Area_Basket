@@ -1281,15 +1281,44 @@ def pagina_rosa(atleti, coach_id, info_slot, squadra_default=""):
 
     with st.expander("Rimuovi un atleta dalla rosa"):
         st.caption("L'atleta esce dalla rosa attiva e lo slot torna libero. "
-                   "Lo storico dei suoi test resta nel database.")
+                   "Lo storico dei suoi test resta nel database e si può "
+                   "riportarlo in rosa da «Atleti rimossi».")
         et = {f"{r['cognome']} {r['nome']}": r["id"] for _, r in atleti.iterrows()}
-        scelto = st.selectbox("Atleta", list(et.keys()))
-        if st.button("Rimuovi dalla rosa"):
+        # Nessun atleta preselezionato e conferma esplicita: con il primo della
+        # lista gia' scelto bastava un tocco per togliere l'atleta sbagliato.
+        scelto = st.selectbox("Atleta", list(et.keys()), index=None,
+                              placeholder="Scegli l'atleta da rimuovere",
+                              key="rim_sel")
+        conferma = st.checkbox(f"Confermo: rimuovi {scelto} dalla rosa"
+                               if scelto else "Confermo la rimozione",
+                               key=f"rim_conf_{scelto}", disabled=scelto is None)
+        if st.button("Rimuovi dalla rosa", disabled=not (scelto and conferma)):
             if db.disattiva_atleta(et[scelto]):
-                st.success("Atleta rimosso. Slot liberato.")
+                st.session_state["rosa_flash"] = (f"{scelto} rimosso. Slot "
+                                                  "liberato.")
                 st.rerun()
             else:
                 st.error("Operazione non riuscita.")
+
+    rimossi = db.load_atleti(coach_id=coach_id, solo_attivi=False)
+    rimossi = rimossi[rimossi["attivo"] == False] if not rimossi.empty \
+        and "attivo" in rimossi.columns else rimossi.iloc[0:0]  # noqa: E712
+    if not rimossi.empty:
+        with st.expander(f"Atleti rimossi ({len(rimossi)})"):
+            st.caption("Riportandolo in rosa l'atleta ritrova tutti i suoi test "
+                       "e occupa di nuovo uno slot della licenza.")
+            er = {f"{r['cognome']} {r['nome']} ({r['ruolo']})": r["id"]
+                  for _, r in rimossi.iterrows()}
+            da_riattivare = st.selectbox("Atleta", list(er.keys()), key="riatt_sel")
+            if st.button("Riporta in rosa", disabled=pieno):
+                ok, msg = db.riattiva_atleta(er[da_riattivare], coach_id)
+                if ok:
+                    st.session_state["rosa_flash"] = (f"{da_riattivare}: {msg}")
+                    st.rerun()
+                else:
+                    st.error(msg)
+            if pieno:
+                st.caption("Licenza piena: libera prima uno slot.")
 
 
 # ==============================================================================
