@@ -188,9 +188,14 @@ def render_scheda(atleta, punteggi, overall, grezzi, targets,
     for asse, col in db.ASSI.items():
         p, tgt = punteggi.get(asse), targets.get(asse, 70)
         if p is None:
+            # Un valore c'e' ma il punteggio no (norma mancante per il ruolo):
+            # va mostrato, altrimenti un dato registrato sembra non rilevato.
+            _g = grezzi.get(col)
+            _testo = ("non rilevato" if _g is None or pd.isna(_g) else
+                      f"{db.formatta_valore(col, _g)} · punteggio non calcolabile")
             righe += ('<div class="a199-riga"><div class="a199-riga-top">'
                       f'<span class="a199-sigla">{asse}</span>'
-                      '<span class="a199-vuoto">non rilevato</span></div>'
+                      f'<span class="a199-vuoto">{_testo}</span></div>'
                       '<div class="a199-barra"></div></div>')
         else:
             righe += (f'<div class="a199-riga"><div class="a199-riga-top">'
@@ -588,6 +593,13 @@ def pagina_sessione(atleti, logo_b64=""):
                        help="Altezza massima toccata al muro. NON la differenza.")}
             st.caption("La colonna grigia è il reach dell'anagrafica, non un dato "
                        "del test: si compila solo il tocco.")
+            da_corr = [f"{n} ({'; '.join(db.verifica_antropometria(r.get('altezza'), r.get('reach')))})"
+                       for n, (_, r) in zip(nomi, convocati.iterrows())
+                       if db.verifica_antropometria(r.get("altezza"), r.get("reach"))]
+            if da_corr:
+                st.error("Anagrafica da correggere nella sezione Rosa prima di "
+                         "salvare l'elevazione — altrimenti il salto calcolato è "
+                         "sbagliato: " + ", ".join(da_corr))
             senza_reach = [n for n, (_, r) in zip(nomi, convocati.iterrows())
                            if pd.isna(r.get("reach"))]
             if senza_reach:
@@ -648,6 +660,7 @@ def salva_sessione(atleti, test_scelti, data_test, sessione, esistenti=None):
     """
     esistenti = esistenti or {}
     ok, errori, avvisi, vuoti, sostituzioni = 0, [], [], 0, []
+    controlli = []
     per_test = {c: 0 for c in test_scelti}
     barra = st.progress(0.0, "Salvataggio in corso...")
 
@@ -692,7 +705,8 @@ def salva_sessione(atleti, test_scelti, data_test, sessione, esistenti=None):
                     _t_prec = gia(a["id"], "ele_salto") + float(a["reach"])
                 if uguale(tocco, _t_prec):
                     continue
-                salto, err = db.calcola_elevazione(tocco, a.get("reach"))
+                salto, err = db.calcola_elevazione(tocco, a.get("reach"),
+                                                   a.get("altezza"))
                 if salto is None:
                     errori.append(f"{nome} — {sigla}: {err}")
                     continue
@@ -724,6 +738,12 @@ def salva_sessione(atleti, test_scelti, data_test, sessione, esistenti=None):
                         errori.append(f"{nome} — {sigla}: {dx:.1f} / {sx:.1f} cm "
                                       "fuori scala. Verificare le misure.")
                         continue
+                    if dx == 0 or sx == 0:
+                        controlli.append(
+                            f"{nome} — {sigla}: registrato 0 cm su un lato "
+                            f"(DX {dx:.1f} · SX {sx:.1f}). È salvato e segnalato "
+                            "come caviglia rigida: se invece quel lato non è "
+                            "stato misurato, correggilo.")
                     peggiore, diff = db.calcola_mobilita(dx, sx)
                     misure["mob_kneewall"], misure["mob_diff"] = peggiore, diff
                     misure["mob_dx"], misure["mob_sx"] = round(dx, 1), round(sx, 1)
@@ -785,6 +805,8 @@ def salva_sessione(atleti, test_scelti, data_test, sessione, esistenti=None):
         st.info("**Valori sostituiti** — il test risultava già misurato in questa "
                 "sessione e il nuovo valore ha preso il posto del precedente:\n"
                 + "\n".join(f"- {x}" for x in sostituzioni))
+    if controlli:
+        st.warning("**Da ricontrollare:**\n" + "\n".join(f"- {x}" for x in controlli))
     if not ok and not errori and not avvisi:
         st.info("Nessuna novità da salvare: i valori nelle griglie coincidono con "
                 "quelli già registrati.")
@@ -944,6 +966,11 @@ def pagina_atleta(atleti, norme, targets):
         st.caption(f"Codice atleta: {atleta['id']} · "
                    f"Squadra: {atleta.get('squadra') or '—'} · "
                    f"Mano: {atleta.get('mano','—')}")
+        _probl = db.verifica_antropometria(atleta.get("altezza"), atleta.get("reach"))
+        if _probl:
+            st.error("Anagrafica da correggere nella sezione Rosa: "
+                     + "; ".join(_probl) + ". Finché non è corretta, "
+                     "l'elevazione di questo atleta non è attendibile.")
         if pd.isna(atleta.get("reach")):
             st.warning("Standing reach mancante: senza questo dato l'elevazione "
                        "non è misurabile correttamente.")
@@ -1060,9 +1087,55 @@ def pagina_confronto(coach_id, tutte):
 # PAGINA — ROSA
 # ==============================================================================
 
+def _misure_rosa(peso, altezza, reach, apertura) -> tuple[dict, list]:
+    """
+    Converte e controlla le misure antropometriche della Rosa.
+
+    I campi partono vuoti e restano vuoti se non si conosce il dato. Prima
+    avevano un minimo (150 cm di altezza, 180 di reach) e un valore di
+    partenza verosimile: un dato non inserito o scritto in metri diventava
+    un numero credibile e sbagliato, e da un reach sbagliato esce
+    un'elevazione sbagliata in tutti i documenti.
+    """
+    def intero(v):
+        return None if v is None or pd.isna(v) else int(round(float(v)))
+    dati = {"peso": None if peso is None or pd.isna(peso) else round(float(peso), 1),
+            "altezza": intero(altezza), "reach": intero(reach),
+            "apertura": intero(apertura)}
+    errori = list(db.verifica_antropometria(dati["altezza"], dati["reach"]))
+    if dati["peso"] is not None and not (40 <= dati["peso"] <= 160):
+        errori.append(f"peso {dati['peso']:g} kg fuori scala")
+    if dati["apertura"] is not None and not (140 <= dati["apertura"] <= 260):
+        errori.append(f"apertura {dati['apertura']} cm fuori scala"
+                      + (" (sembra in metri: va in centimetri)"
+                         if dati["apertura"] < 4 else ""))
+    return dati, errori
+
+
+def _campi_misure(colonne, val=lambda c: None, pref=""):
+    """I quattro campi antropometrici, vuoti se il dato non c'e'."""
+    c7, c8, c9, c10 = colonne
+    peso = c7.number_input("Peso (kg)", 0.0, 400.0, val("peso"), step=0.5,
+                           key=f"{pref}peso", placeholder="es. 82")
+    altezza = c8.number_input("Altezza (cm)", 0, 400, val("altezza"), step=1,
+                              key=f"{pref}alt", placeholder="es. 192")
+    reach = c9.number_input(
+        "Standing reach (cm)", 0, 400, val("reach"), step=1, key=f"{pref}reach",
+        placeholder="es. 252",
+        help="Massima altezza raggiunta con braccio esteso a piedi a terra, in "
+             "centimetri. Di solito circa un terzo in più dell'altezza. "
+             "Necessario per misurare l'elevazione.")
+    apertura = c10.number_input("Apertura braccia (cm)", 0, 400, val("apertura"),
+                                step=1, key=f"{pref}apert", placeholder="es. 195")
+    return peso, altezza, reach, apertura
+
+
 def pagina_rosa(atleti, coach_id, info_slot, squadra_default=""):
     st.title("Rosa")
     barra_slot(info_slot)
+    _flash = st.session_state.pop("rosa_flash", None)
+    if _flash:
+        st.success(_flash)
 
     pieno = info_slot["max"] is not None and info_slot["pieno"]
     if pieno:
@@ -1085,26 +1158,24 @@ def pagina_rosa(atleti, coach_id, info_slot, squadra_default=""):
         ruolo = c5.selectbox("Ruolo", db.RUOLI)
         mano = c6.selectbox("Mano", ["Dx", "Sx", "Ambidestro"])
 
-        c7, c8, c9, c10 = st.columns(4)
-        peso = c7.number_input("Peso (kg)", 40.0, 160.0, 78.0, step=0.5)
-        altezza = c8.number_input("Altezza (cm)", 150, 230, 185, step=1)
-        reach = c9.number_input("Standing reach (cm)", 180, 290, 240, step=1,
-            help="Massima altezza raggiunta con braccio esteso a piedi a terra. "
-                 "Necessario per misurare l'elevazione.")
-        apertura = c10.number_input("Apertura braccia (cm)", 150, 250, 188, step=1)
+        peso, altezza, reach, apertura = _campi_misure(st.columns(4), pref="n_")
+        st.caption("Misure in centimetri. Se un dato non lo conosci lascia il "
+                   "campo vuoto: si aggiunge dopo da «Modifica un atleta».")
 
         if st.form_submit_button("Aggiungi alla rosa", type="primary",
                                  disabled=pieno):
+            misure, err_mis = _misure_rosa(peso, altezza, reach, apertura)
             if not nome or not cognome:
                 st.error("Nome e cognome sono obbligatori.")
+            elif err_mis:
+                st.error("Atleta non salvato. Da correggere: "
+                         + "; ".join(err_mis) + ".")
             else:
                 ok, msg = db.salva_atleta({
                     "nome": nome.strip(), "cognome": cognome.strip(),
                     "anno_nascita": int(anno),
                     "squadra": squadra.strip() or squadra_default or None,
-                    "ruolo": ruolo, "mano": mano, "peso": peso,
-                    "altezza": int(altezza), "reach": int(reach),
-                    "apertura": int(apertura), "attivo": True},
+                    "ruolo": ruolo, "mano": mano, **misure, "attivo": True},
                     coach_id=coach_id)
                 if ok:
                     st.success(f"Atleta aggiunto — codice {msg}")
@@ -1129,6 +1200,15 @@ def pagina_rosa(atleti, coach_id, info_slot, squadra_default=""):
     if not mancanti.empty:
         st.warning(f"{len(mancanti)} atleti senza standing reach: "
                    "l'elevazione non sarà misurabile correttamente per loro.")
+    sospetti = [f"**{r['cognome']} {r['nome']}** — "
+                + "; ".join(db.verifica_antropometria(r.get("altezza"), r.get("reach")))
+                for _, r in atleti.iterrows()
+                if db.verifica_antropometria(r.get("altezza"), r.get("reach"))]
+    if sospetti:
+        st.error("Misure da correggere in «Modifica un atleta». Un reach sbagliato "
+                 "produce un'elevazione sbagliata; correggendolo, l'elevazione "
+                 "dei test già salvati si ricalcola da sola.\n\n"
+                 + "\n".join(f"- {x}" for x in sospetti))
 
     with st.expander("✏️  Modifica un atleta"):
         st.caption("Peso e parametri antropometrici cambiano nel tempo, "
@@ -1141,6 +1221,12 @@ def pagina_rosa(atleti, coach_id, info_slot, squadra_default=""):
         def _val(campo, default):
             v = a.get(campo)
             return default if pd.isna(v) else v
+
+        def _mis(campo):
+            v = a.get(campo)
+            if v is None or pd.isna(v):
+                return None
+            return float(v) if campo == "peso" else int(v)
 
         with st.form("modifica_atleta"):
             m1, m2, m3 = st.columns([2, 2, 1])
@@ -1158,31 +1244,40 @@ def pagina_rosa(atleti, coach_id, info_slot, squadra_default=""):
             m_mano = m6.selectbox("Mano", mani,
                                   index=mani.index(a["mano"])
                                   if a.get("mano") in mani else 0)
-            m7, m8, m9, m10 = st.columns(4)
-            m_peso = m7.number_input("Peso (kg)", 40.0, 160.0,
-                                     float(_val("peso", 78.0)), step=0.5)
-            m_alt = m8.number_input("Altezza (cm)", 150, 230,
-                                    int(_val("altezza", 185)), step=1)
-            m_reach = m9.number_input("Standing reach (cm)", 180, 290,
-                                      int(_val("reach", 240)), step=1)
-            m_apert = m10.number_input("Apertura braccia (cm)", 150, 250,
-                                       int(_val("apertura", 188)), step=1)
+            m_peso, m_alt, m_reach, m_apert = _campi_misure(
+                st.columns(4), _mis, pref=f"m_{a['id']}_")
 
             st.caption("Il codice atleta non cambia: lo storico dei test "
                        "resta collegato.")
             if st.form_submit_button("Salva modifiche", type="primary"):
-                ok, msg = db.salva_atleta({
-                    "id": a["id"], "nome": m_nome.strip(),
-                    "cognome": m_cogn.strip(), "anno_nascita": int(m_anno),
-                    "squadra": m_squadra.strip() or None, "ruolo": m_ruolo,
-                    "mano": m_mano, "peso": m_peso, "altezza": int(m_alt),
-                    "reach": int(m_reach), "apertura": int(m_apert),
-                    "attivo": True}, coach_id=coach_id)
-                if ok:
-                    st.success("Modifiche salvate.")
-                    st.rerun()
+                misure, err_mis = _misure_rosa(m_peso, m_alt, m_reach, m_apert)
+                if err_mis:
+                    st.error("Modifiche non salvate. Da correggere: "
+                             + "; ".join(err_mis) + ".")
                 else:
-                    st.error(msg)
+                    reach_prima = _mis("reach")
+                    ok, msg = db.salva_atleta({
+                        "id": a["id"], "nome": m_nome.strip(),
+                        "cognome": m_cogn.strip(), "anno_nascita": int(m_anno),
+                        "squadra": m_squadra.strip() or None, "ruolo": m_ruolo,
+                        "mano": m_mano, **misure, "attivo": True},
+                        coach_id=coach_id)
+                    if ok:
+                        esito = "Modifiche salvate."
+                        # Reach cambiato: l'elevazione dei test gia' salvati
+                        # si ricostruisce dal tocco con il reach nuovo.
+                        if misure["reach"] is not None \
+                                and misure["reach"] != reach_prima:
+                            ric = db.ricalcola_elevazione(
+                                a["id"], misure["reach"], reach_prima,
+                                misure["altezza"])
+                            if ric:
+                                esito += (" Elevazione ricalcolata — "
+                                          + " · ".join(ric))
+                        st.session_state["rosa_flash"] = esito
+                        st.rerun()
+                    else:
+                        st.error(msg)
 
     with st.expander("Rimuovi un atleta dalla rosa"):
         st.caption("L'atleta esce dalla rosa attiva e lo slot torna libero. "
