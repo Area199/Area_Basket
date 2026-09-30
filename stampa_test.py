@@ -306,6 +306,16 @@ def _righe_scheda(atleta, riga, norme, tgt) -> tuple[str, list, int | None]:
                 rischio = True
                 allarmi.append(f"<b>Asimmetria arti inferiori {_cm(val)}%</b> — oltre "
                                f"il 10%: da approfondire, non è una diagnosi.")
+        elif col == "ele_salto":
+            risultato = db.formatta_valore(col, val)
+            probl = db.verifica_antropometria(atleta.get("altezza"),
+                                              atleta.get("reach"))
+            if probl and not _vuoto(val):
+                rischio = True
+                allarmi.append("<b>Elevazione da verificare</b> — anagrafica non "
+                               "plausibile: " + _html.escape("; ".join(probl))
+                               + ". Corretto il reach nella Rosa, il valore si "
+                               "ricalcola.")
         else:
             risultato = db.formatta_valore(col, val)
 
@@ -461,7 +471,9 @@ def genera_report_squadra(atleti: pd.DataFrame, righe_test: pd.DataFrame, norme,
             v = riga.get(c)
             rischio = ((c == "mob_kneewall" and (db.flag_mobilita(v)
                         or db.flag_mob_diff(riga.get("mob_diff"))))
-                       or (c == "asi_monopodalico" and db.flag_asimmetria(v)))
+                       or (c == "asi_monopodalico" and db.flag_asimmetria(v))
+                       or (c == "ele_salto" and bool(db.verifica_antropometria(
+                           a.get("altezza"), a.get("reach")))))
             if _vuoto(v):
                 celle += '<td class="muto">·</td>'
             else:
@@ -493,6 +505,10 @@ def genera_report_squadra(atleti: pd.DataFrame, righe_test: pd.DataFrame, norme,
         if db.flag_asimmetria(riga.get("asi_monopodalico")):
             allarmi.append(f"<b>{nome_a}</b> — asimmetria arti inferiori "
                            f"({_cm(riga.get('asi_monopodalico'))}%)")
+        _pr = db.verifica_antropometria(a.get("altezza"), a.get("reach"))
+        if _pr and not _vuoto(riga.get("ele_salto")):
+            allarmi.append(f"<b>{nome_a}</b> — elevazione da verificare: "
+                           + _html.escape("; ".join(_pr)))
 
         mancano = [db.META_TEST[c]["sigla"] for c in db.ORDINE_TEST
                    if _vuoto(riga.get(c))]
