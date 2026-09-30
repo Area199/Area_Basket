@@ -825,7 +825,13 @@ def calcola_punteggio(test: str, valore, ruolo: str, norme: pd.DataFrame) -> int
         val = float(valore)
     except (TypeError, ValueError):
         return None
-    if pd.isna(val) or val <= 0:
+    if pd.isna(val) or val < 0:
+        return None
+    # Zero e' un vuoto per i tempi e le ripetizioni, ma al knee-to-wall e' una
+    # misura vera: la caviglia piu' rigida possibile. Scartarlo nascondeva
+    # proprio l'atleta piu' a rischio e lo toglieva dalle priorita' del
+    # generatore dei programmi.
+    if val == 0 and test != "mob_kneewall":
         return None
 
     n = _norma(norme, ruolo, test)
@@ -874,12 +880,60 @@ def calcola_asimmetria(destra, sinistra) -> float | None:
     return round((alto - basso) / alto * 100, 1)
 
 
-def calcola_elevazione(altezza_tocco, reach) -> tuple[float | None, str | None]:
+# ANTROPOMETRIA — limiti di plausibilita'.
+# Lo standing reach di un adulto sta attorno a 1,33 volte l'altezza. La forbice
+# 1,22-1,45 e' larga di proposito: serve a intercettare gli errori grossolani
+# (altezza scritta nel campo del reach, valori in metri, campo lasciato al
+# minimo), non a giudicare la morfologia di un atleta.
+ALTEZZA_MIN, ALTEZZA_MAX = 140, 230
+REACH_MIN, REACH_MAX = 190, 310
+RAPPORTO_REACH = (1.22, 1.45)
+# Oltre questa elevazione il valore e' da record anche per un professionista:
+# in una squadra dilettantistica significa quasi sempre un reach sbagliato.
+ELEVAZIONE_MAX = 90.0
+
+
+def verifica_antropometria(altezza, reach) -> list:
+    """Problemi di altezza e reach, in parole leggibili. Lista vuota = a posto.
+    Un campo vuoto non e' un problema qui: lo segnalano gia' gli avvisi
+    sul reach mancante."""
+    problemi = []
+    try:
+        h = float(altezza)
+        h = None if pd.isna(h) else h
+    except (TypeError, ValueError):
+        h = None
+    try:
+        r = float(reach)
+        r = None if pd.isna(r) else r
+    except (TypeError, ValueError):
+        r = None
+
+    if h is not None and not (ALTEZZA_MIN <= h <= ALTEZZA_MAX):
+        problemi.append(f"altezza {h:g}: sembra in metri, va scritta in centimetri"
+                        if h < 3 else f"altezza {h:g} cm fuori scala")
+    if r is not None and not (REACH_MIN <= r <= REACH_MAX):
+        problemi.append(f"reach {r:g}: sembra in metri, va scritto in centimetri"
+                        if r < 4 else f"reach {r:g} cm fuori scala")
+    if h is not None and r is not None and not problemi:
+        lo, hi = RAPPORTO_REACH
+        if not (h * lo <= r <= h * hi):
+            problemi.append(f"reach {r:.0f} cm non plausibile per un'altezza di "
+                            f"{h:.0f} cm (atteso fra {h * lo:.0f} e {h * hi:.0f})")
+    return problemi
+
+
+def calcola_elevazione(altezza_tocco, reach,
+                       altezza=None) -> tuple[float | None, str | None]:
     """
     Elevazione = altezza del tocco meno standing reach.
 
     Restituisce (valore, errore). L'errore e' un messaggio leggibile, non
     un'eccezione: serve a dire al coach QUALE atleta ha il problema.
+
+    Con l'altezza a disposizione controlla anche che il reach sia credibile:
+    un reach sbagliato produce un'elevazione sbagliata che poi sembra un dato
+    vero in tutti i documenti.
     """
     try:
         t = float(altezza_tocco)
@@ -895,11 +949,16 @@ def calcola_elevazione(altezza_tocco, reach) -> tuple[float | None, str | None]:
     if pd.isna(r) or r <= 0:
         return None, "standing reach mancante in anagrafica"
 
+    problemi = verifica_antropometria(altezza, r)
+    if problemi:
+        return None, "anagrafica da correggere — " + "; ".join(problemi)
+
     salto = round(t - r, 1)
     if salto <= 0:
         return None, f"tocco ({t:.0f}) non superiore al reach ({r:.0f}): verificare"
-    if salto > 120:
-        return None, f"elevazione di {salto:.0f} cm implausibile: verificare i valori"
+    if salto > ELEVAZIONE_MAX:
+        return None, (f"elevazione di {salto:.0f} cm implausibile: verificare il "
+                      f"tocco ({t:.0f}) e il reach in anagrafica ({r:.0f})")
     return salto, None
 
 
@@ -923,7 +982,7 @@ def flag_mobilita(valore) -> bool:
     """True se la dorsiflessione e' sotto la soglia di rischio."""
     try:
         v = float(valore)
-        return not pd.isna(v) and 0 < v < SOGLIA_MOB_MINIMA
+        return not pd.isna(v) and 0 <= v < SOGLIA_MOB_MINIMA
     except (TypeError, ValueError):
         return False
 
@@ -1046,6 +1105,55 @@ def salva_misure(atleta_id: str, data_test, sessione: str,
         return True, {"sostituiti": sostituiti}
     except Exception as e:
         return False, str(e)
+
+
+def ricalcola_elevazione(atleta_id: str, reach_nuovo, reach_vecchio=None,
+                         altezza=None) -> list:
+    """
+    Riallinea l'elevazione di tutte le sessioni di un atleta dopo una
+    correzione del reach in anagrafica.
+
+    Il dato primario e' l'altezza del tocco (ele_tocco): l'elevazione si
+    ricostruisce da quello. Per le righe salvate prima della 008, che hanno
+    solo l'elevazione, il tocco si ricava con il reach vecchio.
+    Se il nuovo calcolo non e' plausibile l'elevazione viene svuotata, non
+    lasciata sbagliata: il tocco resta e il valore si ricostruisce alla
+    correzione successiva.
+
+    Restituisce messaggi leggibili, uno per sessione toccata.
+    """
+    msg = []
+    try:
+        cl = get_client()
+        righe = (cl.table("test_sessioni")
+                 .select("id,sessione,stagione,ele_salto,ele_tocco")
+                 .eq("atleta_id", atleta_id).execute().data or [])
+        for r in righe:
+            tocco = _pulisci(r.get("ele_tocco"))
+            if tocco is None and _pulisci(r.get("ele_salto")) is not None \
+                    and reach_vecchio is not None and not pd.isna(reach_vecchio):
+                tocco = float(r["ele_salto"]) + float(reach_vecchio)
+            if tocco is None:
+                continue
+            salto, err = calcola_elevazione(tocco, reach_nuovo, altezza)
+            nome_s = f"{r.get('sessione')} {r.get('stagione') or ''}".strip()
+            prima = _pulisci(r.get("ele_salto"))
+            if prima is not None and salto is not None \
+                    and abs(float(prima) - salto) < 1e-6:
+                continue
+            cl.table("test_sessioni").update(
+                {"ele_salto": salto, "ele_tocco": round(float(tocco), 1)}
+            ).eq("id", r["id"]).execute()
+            if salto is None:
+                msg.append(f"{nome_s}: elevazione svuotata — {err}")
+            else:
+                msg.append(f"{nome_s}: elevazione "
+                           f"{'da ' + format(float(prima), '.1f') + ' ' if prima is not None else ''}"
+                           f"a {salto:.1f} cm")
+        invalidate_cache()
+    except Exception as e:
+        msg.append(f"ricalcolo non riuscito: {e}")
+    return msg
 
 
 def salva_commento_ai(sessione_id: int, testo: str) -> bool:
