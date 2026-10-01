@@ -744,7 +744,8 @@ def load_test(atleta_id: str | None = None) -> pd.DataFrame:
             "id", "atleta_id", "data_test", "sessione", "eta", "peso", "altezza",
             "mob_kneewall", "mob_diff", "ele_salto", "acc_10m", "agi_lane",
             "res_navetta", "for_piegamenti", "asi_monopodalico", "note",
-            "ai_comment", "stagione", "date_misure"] + MISURE_GREZZE)
+            "ai_comment", "ai_comment_base", "stagione", "date_misure"]
+            + MISURE_GREZZE)
     for c in list(ASSI.values()) + ["asi_monopodalico", "mob_diff", "peso"] \
             + MISURE_GREZZE:
         if c in df.columns:
@@ -1156,10 +1157,48 @@ def ricalcola_elevazione(atleta_id: str, reach_nuovo, reach_vecchio=None,
     return msg
 
 
-def salva_commento_ai(sessione_id: int, testo: str) -> bool:
+# Valori su cui si basa la lettura tecnica. Se uno cambia — un test aggiunto
+# in un altro giorno, un'elevazione ricalcolata dopo la correzione del
+# reach — la lettura scritta prima descrive un profilo che non c'e' piu'.
+COLONNE_IMPRONTA = list(ASSI.values()) + ["asi_monopodalico", "mob_diff"]
+
+
+def impronta_misure(riga) -> str:
+    """Firma compatta dei valori di una sessione, per riconoscere una
+    lettura tecnica scritta su dati diversi da quelli attuali."""
+    parti = []
+    for c in COLONNE_IMPRONTA:
+        v = riga.get(c) if hasattr(riga, "get") else None
+        try:
+            f = float(v)
+            parti.append("-" if pd.isna(f) else f"{f:.2f}")
+        except (TypeError, ValueError):
+            parti.append("-")
+    return "|".join(parti)
+
+
+def commento_aggiornato(riga) -> bool:
+    """True se la lettura tecnica e' stata scritta sui valori attuali.
+    Le letture precedenti alla 017 non hanno impronta: non si puo' sapere
+    su quali dati siano state scritte, quindi valgono come superate."""
+    base = riga.get("ai_comment_base") if hasattr(riga, "get") else None
+    if base is None or (isinstance(base, float) and pd.isna(base)):
+        return False
+    return str(base) == impronta_misure(riga)
+
+
+def salva_commento_ai(sessione_id: int, testo: str, base: str | None = None) -> bool:
+    cl = get_client().table("test_sessioni")
     try:
-        get_client().table("test_sessioni").update({"ai_comment": testo}) \
-            .eq("id", sessione_id).execute()
+        campi = {"ai_comment": testo}
+        if base is not None:
+            campi["ai_comment_base"] = base
+        try:
+            cl.update(campi).eq("id", sessione_id).execute()
+        except Exception:
+            # database non ancora migrato alla 017: si salva almeno il testo
+            get_client().table("test_sessioni").update({"ai_comment": testo}) \
+                .eq("id", sessione_id).execute()
         invalidate_cache()
         return True
     except Exception:
