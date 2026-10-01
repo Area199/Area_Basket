@@ -902,14 +902,30 @@ def pagina_atleta(atleti, norme, targets):
                     "scheda", atleta["cognome"], atleta["nome"], riga["sessione"]),
                 mime="text/html", key=f"stampa_{aid}")
 
-            if riga.get("note"):
+            # NaN e' truthy: senza pd.notna un campo vuoto stamperebbe «nan»
+            _note = riga.get("note")
+            if pd.notna(_note) and str(_note).strip():
                 st.markdown(f'<div class="a199-nota"><b>NOTE DI CAMPO</b><br>'
-                            f'{riga["note"]}</div>', unsafe_allow_html=True)
-            if riga.get("ai_comment"):
+                            f'{_note}</div>', unsafe_allow_html=True)
+            _ai = riga.get("ai_comment")
+            _ha_ai = pd.notna(_ai) and bool(str(_ai).strip())
+            _ai_ok = _ha_ai and db.commento_aggiornato(riga)
+            if _ai_ok:
                 st.markdown(f'<div class="a199-nota"><b>LETTURA TECNICA</b><br>'
-                            f'{riga["ai_comment"]}</div>', unsafe_allow_html=True)
-            elif openai and db.puo("usa_ai"):
-                if st.button("Genera lettura tecnica", key=f"ai_{aid}"):
+                            f'{_ai}</div>', unsafe_allow_html=True)
+            elif _ha_ai:
+                # Scritta su valori diversi da quelli attuali, o prima che il
+                # sistema registrasse su quali valori: resta leggibile qui ma
+                # non va nelle stampe, dove contraddirebbe la tabella.
+                st.markdown(f'<div class="a199-nota" style="opacity:0.55">'
+                            f'<b>LETTURA TECNICA — SUPERATA</b><br>{_ai}</div>',
+                            unsafe_allow_html=True)
+                st.caption("Scritta su dati precedenti alle ultime misure: non "
+                           "compare nella scheda stampabile. Rigenerala per "
+                           "aggiornarla.")
+            if (not _ai_ok) and openai and db.puo("usa_ai"):
+                if st.button("Rigenera lettura tecnica" if _ha_ai
+                             else "Genera lettura tecnica", key=f"ai_{aid}"):
                     genera_commento(atleta, p, db.calcola_overall(p), grezzi, riga)
 
     with t2:
@@ -1002,7 +1018,7 @@ def genera_commento(atleta, punteggi, ovr, grezzi, riga):
     md = riga.get("mob_diff")
     if pd.notna(md):
         extra += (f"\nDifferenza caviglie: {md} cm "
-                  f"({'OLTRE soglia 1.5 cm' if db.flag_mob_diff(md) else 'nella norma'})")
+                  f"({'OLTRE soglia ' + format(db.SOGLIA_MOB_DIFF, 'g') + ' cm' if db.flag_mob_diff(md) else 'nella norma'})")
 
     with st.spinner("Elaborazione..."):
         try:
@@ -1020,7 +1036,8 @@ def genera_commento(atleta, punteggi, ovr, grezzi, riga):
             testo = resp.choices[0].message.content
             st.markdown(f'<div class="a199-nota">{testo}</div>', unsafe_allow_html=True)
             if pd.notna(riga.get("id")):
-                db.salva_commento_ai(int(riga["id"]), testo)
+                db.salva_commento_ai(int(riga["id"]), testo,
+                                     db.impronta_misure(riga))
         except Exception as e:
             st.error(f"Generazione non riuscita: {e}")
 
