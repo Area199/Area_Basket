@@ -324,9 +324,14 @@ def _righe_scheda(atleta, riga, norme, tgt) -> tuple[str, list, int | None]:
             punt = (f'<span class="punt">{p}</span>' if p is not None
                     else '<span class="piccolo">—</span>')
             barra = _barra(p, t)
+        elif db.flag_asimmetria(val):
+            punt = '<b style="color:#B71C1C">oltre soglia</b>'
+            barra = ('<span class="piccolo">sopra il 10% · indicatore di rischio, '
+                     'non entra nell\'overall</span>')
         else:
-            punt = '<span class="piccolo">rischio</span>'
-            barra = '<span class="piccolo">non entra nel punteggio</span>'
+            punt = '<span style="color:#1B7F3B">entro soglia</span>'
+            barra = ('<span class="piccolo">sotto il 10% · indicatore di rischio, '
+                     'non entra nell\'overall</span>')
 
         classe = ' class="c rischio"' if rischio else ' class="c"'
         if _vuoto(val):
@@ -380,7 +385,9 @@ def _blocco_scheda(atleta, riga, norme, targets, sessione, stagione,
     if _e(riga.get("note")):
         corpo += (f'<div class="nota"><b>NOTE DI CAMPO</b><br>'
                   f'{_e(riga.get("note")).replace(chr(10), "<br>")}</div>')
-    if _e(riga.get("ai_comment")):
+    # Solo se scritta sui valori attuali: una lettura superata contraddirebbe
+    # la tabella stampata sopra (overall diverso, test mancanti).
+    if _e(riga.get("ai_comment")) and db.commento_aggiornato(riga):
         corpo += (f'<div class="nota"><b>LETTURA TECNICA</b><br>'
                   f'{_e(riga.get("ai_comment")).replace(chr(10), "<br>")}</div>')
 
