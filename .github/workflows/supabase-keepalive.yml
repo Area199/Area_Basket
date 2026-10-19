@@ -1,0 +1,44 @@
+# Mantiene attivo il progetto Supabase sul piano Free.
+# Supabase mette in pausa i progetti senza attivita' per 7 giorni:
+# una lettura al giorno sul database basta a evitarlo.
+#
+# Credenziali: NON stanno in questo file. Vanno nei segreti del repository
+# (Settings > Secrets and variables > Actions):
+#   SUPABASE_URL       URL del progetto
+#   SUPABASE_ANON_KEY  chiave "anon public" legacy (inizia per eyJ)
+#
+# Se la lettura fallisce, il workflow va in errore e GitHub manda una mail:
+# e' anche l'allarme che il database non risponde.
+
+name: Supabase keep-alive
+
+on:
+  schedule:
+    - cron: "17 5 * * *"   # ogni giorno alle 05:17 UTC
+  workflow_dispatch:        # avvio manuale dalla scheda Actions, per provarlo
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Lettura minima sul database
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "Segreti SUPABASE_URL o SUPABASE_ANON_KEY mancanti."
+            exit 1
+          fi
+          BASE="${SUPABASE_URL%/}"
+          # La risposta non viene stampata: nei log compare solo il codice HTTP.
+          CODICE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 \
+            "$BASE/rest/v1/utenti?select=id&limit=1" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY")
+          echo "Risposta Supabase: HTTP $CODICE"
+          if [ "$CODICE" != "200" ]; then
+            echo "Il database non ha risposto correttamente."
+            exit 1
+          fi
