@@ -439,6 +439,25 @@ def pagina_panoramica(atleti, norme, targets, info_slot):
             st.caption("Si apre nel browser: in alto a destra c'è STAMPA, da lì "
                        "anche «Salva come PDF».")
 
+        # La stampa serve a consegnare i risultati; il CSV serve a portarli
+        # fuori — foglio di calcolo, analisi, confronto fra sessioni. Esporta
+        # TUTTE le sessioni, non solo quella scelta qui sopra: il valore sta
+        # proprio nel poterle confrontare.
+        with st.expander("📊  Esporta i dati in CSV"):
+            st.markdown("Tutte le sessioni di tutta la rosa, una riga per "
+                        "atleta per sessione: misure rilevate sul campo, "
+                        "valori calcolati e punteggi per asse. Si apre in "
+                        "Excel o in Fogli Google.")
+            st.download_button(
+                "Scarica il CSV", use_container_width=True, mime="text/csv",
+                data=stampa_test.esporta_csv(atleti, test, norme)
+                     .encode("utf-8-sig"),
+                file_name=stampa_test.nome_file(
+                    "dati", date.today().strftime("%Y-%m-%d"),
+                    estensione="csv"))
+            st.caption("Separatore punto e virgola e virgola decimale: si apre "
+                       "corretto senza doverlo sistemare a mano.")
+
 
 # ==============================================================================
 # PAGINA — SESSIONE TEST
