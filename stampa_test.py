@@ -112,10 +112,10 @@ def _nome(a) -> str:
     return f"{_e(a.get('cognome'))} {_e(a.get('nome'))}".strip()
 
 
-def nome_file(prefisso: str, *parti) -> str:
+def nome_file(prefisso: str, *parti, estensione: str = "html") -> str:
     base = "_".join(re.sub(r"[^A-Za-z0-9]+", "_", str(p)).strip("_")
                     for p in parti if str(p or "").strip())
-    return f"AREA199_{prefisso}_{base or 'risultati'}.html"
+    return f"AREA199_{prefisso}_{base or 'risultati'}.{estensione}"
 
 
 def sessioni_disponibili(test: pd.DataFrame, id_atleti) -> list:
@@ -595,3 +595,134 @@ def genera_report_squadra(atleti: pd.DataFrame, righe_test: pd.DataFrame, norme,
                                     testata=testata)
 
     return _pagina(f"Risultati {sessione} {stagione}", corpo)
+
+
+# ==============================================================================
+# 5. ESPORTAZIONE IN CSV
+# ==============================================================================
+#
+# Le stampe qui sopra servono a CONSEGNARE i risultati: al coach, agli atleti,
+# alla societa'. Questa serve a PORTARLI FUORI: in un foglio di calcolo, in
+# un'analisi, in una mail al preparatore. Sono due esigenze diverse e finora
+# c'era solo la prima.
+#
+# Esporta tutte le sessioni di tutti gli atleti passati, una riga per atleta
+# per sessione. Le colonne che non esistono nel database vengono saltate
+# invece di uscire vuote: cosi' il file non si rompe se lo schema cambia.
+#
+# Vengono esportate sia le misure grezze rilevate sul campo sia i valori
+# calcolati sia i punteggi: i grezzi sono il dato primario e da quelli si
+# ricostruisce tutto il resto, mai il contrario.
+
+# Ordine delle colonne. Quelle assenti nei dati vengono ignorate.
+_COLONNE_CSV = (
+    ["cognome", "nome", "ruolo", "squadra", "stagione", "sessione", "data_test"]
+    + ["eta", "peso", "altezza", "reach"]
+    + db.MISURE_GREZZE
+    + db.ORDINE_TEST
+    + ["mob_diff"]
+)
+
+_ETICHETTE_CSV = {
+    "data_test": "data sessione", "eta": "eta", "mob_diff": "differenza caviglie (cm)",
+    "ele_tocco": "tocco (cm)", "asi_dx": "salto dx (cm)", "asi_sx": "salto sx (cm)",
+    "mob_dx": "caviglia dx (cm)", "mob_sx": "caviglia sx (cm)",
+}
+
+
+def _giorno_misura(riga, colonna: str) -> str:
+    """Il giorno in cui QUEL test e' stato misurato, che puo' non coincidere
+    con la data della sessione: i test si possono fare in giornate diverse."""
+    grezzo = riga.get("date_misure")
+    if _vuoto(grezzo):
+        return ""
+    try:
+        mappa = json.loads(grezzo) if isinstance(grezzo, str) else dict(grezzo)
+        return str(mappa.get(colonna, "") or "")
+    except (ValueError, TypeError):
+        return ""
+
+
+def esporta_csv(atleti: pd.DataFrame, test: pd.DataFrame,
+                norme: pd.DataFrame) -> str:
+    """Tutte le sessioni di questi atleti in CSV, una riga per atleta per
+    sessione: misure grezze, valori calcolati, punteggi per asse e overall."""
+    import csv
+    import io
+
+    if atleti is None or atleti.empty or test is None or test.empty:
+        return "nessun dato da esportare\n"
+
+    righe_test = test[test["atleta_id"].isin(atleti["id"].tolist())]
+    if righe_test.empty:
+        return "nessun dato da esportare\n"
+
+    per_id = {a["id"]: a for _, a in atleti.iterrows()}
+    presenti = [c for c in _COLONNE_CSV
+                if c in righe_test.columns or c in atleti.columns
+                or c in ("cognome", "nome", "ruolo", "squadra")]
+
+    def _titolo(c: str) -> str:
+        if c in _ETICHETTE_CSV:
+            return _ETICHETTE_CSV[c]
+        meta = db.META_TEST.get(c)
+        if meta:                      # "MOB mobilita' caviglia (cm)"
+            unita = meta.get("unita") or ""
+            return f"{meta['sigla']} {meta['label'].lower()}" \
+                   + (f" ({unita})" if unita else "")
+        return c.replace("_", " ")
+
+    intestazione = (
+        [_titolo(c) for c in presenti]
+        + [f"giorno {db.META_TEST[c]['sigla']}" for c in db.ORDINE_TEST
+           if c in presenti and c in db.META_TEST]
+        + [f"punteggio {a}" for a in db.ASSI]
+        + ["punteggio complessivo", "note"]
+    )
+
+    buf = io.StringIO()
+    scrittore = csv.writer(buf, delimiter=";", lineterminator="\n")
+    scrittore.writerow(intestazione)
+
+    def _chiave(r):
+        atl = per_id.get(r["atleta_id"], {})
+        return (str(atl.get("cognome") or ""), str(atl.get("nome") or ""),
+                str(r.get("stagione") or ""),
+                ORDINE_SESSIONI.get(str(r.get("sessione") or ""), 9))
+
+    for _, r in sorted(righe_test.iterrows(), key=lambda kv: _chiave(kv[1])):
+        atleta = per_id.get(r["atleta_id"])
+        if atleta is None:
+            continue
+        ruolo = str(atleta.get("ruolo") or "")
+        punteggi = db.calcola_tutti(r, ruolo, norme)
+
+        fuori = []
+        for c in presenti:
+            if c in ("cognome", "nome", "ruolo", "squadra"):
+                v = atleta.get(c)
+            elif c in righe_test.columns:
+                v = r.get(c)
+            else:
+                v = atleta.get(c)
+            if _vuoto(v):
+                fuori.append("")
+            elif c == "data_test":
+                fuori.append(pd.to_datetime(v).strftime("%d/%m/%Y"))
+            elif isinstance(v, float):
+                # virgola decimale: il foglio di calcolo italiano la vuole cosi'
+                fuori.append(f"{v:g}".replace(".", ","))
+            else:
+                fuori.append(str(v))
+
+        fuori += [_giorno_misura(r, c) for c in db.ORDINE_TEST
+                  if c in presenti and c in db.META_TEST]
+        fuori += ["" if punteggi.get(a) is None else str(punteggi[a])
+                  for a in db.ASSI]
+        complessivo = db.calcola_overall(punteggi)
+        fuori.append("" if complessivo is None else str(complessivo))
+        fuori.append("" if _vuoto(r.get("note")) else str(r.get("note")))
+
+        scrittore.writerow(fuori)
+
+    return buf.getvalue()
