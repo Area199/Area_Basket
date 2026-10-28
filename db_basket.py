@@ -9,6 +9,7 @@ Segreti richiesti (pannello Streamlit Cloud):
 
     supabase_url = "https://xxxxx.supabase.co"
     supabase_key = "eyJ...."        # legacy service_role key
+    supabase_schema = "basket"      # schema delle tabelle (se manca: public)
     pin_admin    = "197519"         # chiave maestra dell'amministratore
     openai_key   = "sk-..."         # facoltativo
 
@@ -25,7 +26,7 @@ from datetime import date, datetime
 
 import pandas as pd
 import streamlit as st
-from supabase import create_client, Client
+from supabase import create_client, Client, ClientOptions
 
 try:
     from PIL import Image
@@ -267,7 +268,12 @@ LOGO_LATO_MAX = 320           # pixel, ridimensionamento del logo caricato
 @st.cache_resource
 def get_client() -> Client:
     try:
-        return create_client(st.secrets["supabase_url"], st.secrets["supabase_key"])
+        # Le tabelle del gestionale stanno nello schema "basket" del progetto
+        # condiviso con le altre app AREA199. Senza il segreto supabase_schema
+        # resta "public", cioe' il comportamento di prima.
+        schema = str(st.secrets.get("supabase_schema", "public")).strip() or "public"
+        return create_client(st.secrets["supabase_url"], st.secrets["supabase_key"],
+                             options=ClientOptions(schema=schema))
     except KeyError as e:
         st.error(f"Segreto mancante: {e}. Servono 'supabase_url' e 'supabase_key'.")
         st.stop()
